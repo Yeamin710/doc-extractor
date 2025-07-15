@@ -1,0 +1,4 @@
+flask
+requests
+PyMuPDF
+docx2txt
