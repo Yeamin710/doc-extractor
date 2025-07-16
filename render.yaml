@@ -1,14 +1,21 @@
 services:
   - type: web
-    name: pdf-extractor-api # You can choose a different unique name
+    name: pdf-extractor-api # Or whatever name you chose
     env: python
-    region: oregon # You can choose a region closer to you/your users
-    plan: free # Use 'free' for initial testing, consider 'starter' for more consistent performance
-    buildCommand: "" # Render will automatically run 'pip install -r requirements.txt'
-    startCommand: "gunicorn main:app" # This tells Render to run your Flask app using Gunicorn
+    region: oregon # Or your chosen region
+    plan: free
+    # Add the systemPackages section here:
+    systemPackages:
+      - build-essential
+      - libjpeg-dev
+      - zlib1g-dev
+      - libfreetype6-dev
+      - liblcms2-dev
+      - libopenjp2-7-dev
+      - libwebp-dev
+      - tesseract-ocr # Often useful for text extraction, though PyMuPDF doesn't strictly require it for basic text
+    buildCommand: ""
+    startCommand: "gunicorn main:app"
     envVars:
-      # IMPORTANT: Do NOT put your actual API key here.
-      # Set this in the Render Dashboard -> Your Service -> Environment section.
-      # Example placeholder:
       - key: OPENROUTER_API_KEY
-        value: "REPLACE_THIS_WITH_YOUR_KEY_IN_RENDER_DASHBOARD" # Set in Render UI, NOT here!
+        value: "REPLACE_THIS_WITH_YOUR_KEY_IN_RENDER_DASHBOARD"
