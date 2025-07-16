@@ -1,8 +1,8 @@
 services:
   - type: web
-    name: pdf-extractor-api
+    name: pdf-extractor-api # Or whatever name you chose
     env: python
-    region: oregon
+    region: oregon # Or your chosen region
     plan: free
     systemPackages:
       - build-essential
@@ -13,7 +13,8 @@ services:
       - libopenjp2-7-dev
       - libwebp-dev
       - tesseract-ocr
-      - pkg-config # <--- Add this line
+      - pkg-config
+      - libtesseract-dev # <--- Add this crucial line
     buildCommand: ""
     startCommand: "gunicorn main:app"
     envVars:
