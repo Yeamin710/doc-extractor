@@ -1,9 +1,10 @@
 services:
   - type: web
-    name: pdf-extractor-api # Or whatever name you chose
+    name: pdf-extractor-api
     env: python
-    region: singapore # Or your chosen region
+    region: oregon
     plan: free
+    pythonVersion: 3.11.9 # <--- Add this line, or try 3.12.3
     systemPackages:
       - build-essential
       - libjpeg-dev
@@ -14,7 +15,7 @@ services:
       - libwebp-dev
       - tesseract-ocr
       - pkg-config
-      - libtesseract-dev # <--- Add this crucial line
+      - libtesseract-dev
     buildCommand: ""
     startCommand: "gunicorn main:app"
     envVars:
