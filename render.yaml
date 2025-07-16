@@ -2,7 +2,7 @@ services:
   - type: web
     name: pdf-extractor-api # Or whatever name you chose
     env: python
-    region: oregon # Or your chosen region
+    region: singapore # Or your chosen region
     plan: free
     systemPackages:
       - build-essential
