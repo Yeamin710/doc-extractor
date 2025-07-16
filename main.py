@@ -2,7 +2,7 @@ import io
 import os
 import requests
 import fitz # PyMuPDF
-import json # Added for JSON parsing in MCQ generation
+import json
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -25,21 +25,34 @@ def home():
 def extract_pdf():
     pdf_file_data = None
     filename = None
+    # Variables to capture original_mode and original_filename from request
+    original_mode = None
+    original_filename_input = None
 
-    # --- Handle File Upload ---
+    # --- Handle File Upload (form-data) ---
     if 'file' in request.files:
         file = request.files['file']
         if file.filename == '':
             return jsonify({'error': 'No selected file'}), 400
         if file and allowed_file(file.filename):
             pdf_file_data = file.read()
-            filename = file.filename
+            filename = file.filename # This is the actual uploaded filename
+
+            # Capture original_mode and original_filename if sent as form data along with the file
+            original_mode = request.form.get('original_mode')
+            original_filename_input = request.form.get('original_filename')
+
         else:
             return jsonify({'error': 'Invalid file type. Only PDF files are allowed.'}), 400
-    # --- Handle URL Input ---
+    # --- Handle URL Input (JSON payload) ---
     elif request.is_json:
         data = request.get_json()
         pdf_url = data.get('pdf_url')
+        
+        # Capture original_mode and original_filename if sent in JSON payload
+        original_mode = data.get('original_mode')
+        original_filename_input = data.get('original_filename')
+
         if pdf_url:
             try:
                 response = requests.get(pdf_url, stream=True)
@@ -49,7 +62,7 @@ def extract_pdf():
                     return jsonify({'error': 'URL does not point to a PDF file.'}), 400
 
                 pdf_file_data = response.content
-                filename = pdf_url.split('/')[-1]
+                filename = pdf_url.split('/')[-1] # Extract filename from URL
                 if not filename.lower().endswith('.pdf'):
                     filename = "downloaded_pdf.pdf"
             except requests.exceptions.RequestException as e:
@@ -75,16 +88,23 @@ def extract_pdf():
             })
         doc.close()
 
-        # Added for direct use by LLM functions
         full_extracted_text = "\n".join([p['text'] for p in extracted_text_per_page])
 
-        return jsonify({
+        # Include original_mode and original_filename in the response
+        response_payload = {
             'status': 'success',
-            'filename': filename,
-            'full_text': full_extracted_text, # This is the key for LLM input
+            'filename': original_filename_input if original_filename_input else filename, # Use original_filename_input if available
+            'full_text': full_extracted_text,
             'pages': extracted_text_per_page,
             'message': 'Text extracted successfully. Use the full_text for summarization or MCQ generation.'
-        }), 200
+        }
+        
+        if original_mode is not None:
+            response_payload['original_mode'] = original_mode
+        if original_filename_input is not None:
+            response_payload['original_filename'] = original_filename_input
+
+        return jsonify(response_payload), 200
 
     except fitz.FileDataError as e:
         return jsonify({'error': f'Invalid PDF file or corrupted data: {str(e)}'}), 400
@@ -99,9 +119,7 @@ if not OPENROUTER_API_KEY:
     print("WARNING: OPENROUTER_API_KEY environment variable not set. LLM features will not work.")
 
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1/chat/completions"
-# You can choose a different model if desired, e.g., "openai/gpt-3.5-turbo"
-# Check OpenRouter.ai/models for available models and their costs
-LLM_MODEL = "mistralai/mistral-7b-instruct" # A good, generally cost-effective choice
+LLM_MODEL = "mistralai/mistral-7b-instruct"
 
 def call_llm_api(prompt_messages):
     """
@@ -113,20 +131,19 @@ def call_llm_api(prompt_messages):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        # Optional: For OpenRouter leaderboard, replace with your site details
         "HTTP-Referer": "https://my-doc-backend.onrender.com",
         "X-Title": "PDF Processor API"
     }
     payload = {
         "model": LLM_MODEL,
         "messages": prompt_messages,
-        "temperature": 0.7, # Controls creativity (0.0 for deterministic, 1.0 for more creative)
-        "max_tokens": 1000 # Limit the length of the LLM's response
+        "temperature": 0.7,
+        "max_tokens": 1000
     }
 
     try:
         response = requests.post(OPENROUTER_API_BASE, headers=headers, json=payload)
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         return {"error": f"LLM API call failed: {str(e)}"}
@@ -162,7 +179,6 @@ def summarize_text():
         'summary': summary
     }), 200
 
-# --- START of added /highlight endpoint ---
 @app.route('/highlight', methods=['POST'])
 def highlight_text():
     """
@@ -191,7 +207,6 @@ def highlight_text():
         'status': 'success',
         'highlights': highlights
     }), 200
-# --- END of added /highlight endpoint ---
 
 @app.route('/generate-mcqs', methods=['POST'])
 def generate_mcqs():
