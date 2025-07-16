@@ -1,4 +1,5 @@
-flask
-requests
-PyMuPDF
-docx2txt
+Flask==2.3.0
+requests==2.31.0
+PyMuPDF==1.23.16
+docx2txt==0.8
+gunicorn==22.0.0
