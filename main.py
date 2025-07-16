@@ -2,7 +2,7 @@ import io
 import os
 import requests
 import fitz # PyMuPDF
-import json
+import json # Added for JSON parsing in MCQ generation
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -25,10 +25,6 @@ def home():
 def extract_pdf():
     pdf_file_data = None
     filename = None
-    # --- ADDED: Variables to capture original_mode and original_filename from request ---
-    original_mode = None
-    original_filename_input = None
-    # --- END ADDED ---
 
     # --- Handle File Upload ---
     if 'file' in request.files:
@@ -37,24 +33,13 @@ def extract_pdf():
             return jsonify({'error': 'No selected file'}), 400
         if file and allowed_file(file.filename):
             pdf_file_data = file.read()
-            filename = file.filename # This is the actual uploaded filename
-
-            # If n8n sends these as form data along with the file
-            original_mode = request.form.get('original_mode')
-            original_filename_input = request.form.get('original_filename')
-
+            filename = file.filename
         else:
             return jsonify({'error': 'Invalid file type. Only PDF files are allowed.'}), 400
-    # --- Handle URL Input (JSON payload) ---
+    # --- Handle URL Input ---
     elif request.is_json:
         data = request.get_json()
         pdf_url = data.get('pdf_url')
-        
-        # --- ADDED: Capture original_mode and original_filename from JSON payload ---
-        original_mode = data.get('original_mode')
-        original_filename_input = data.get('original_filename')
-        # --- END ADDED ---
-
         if pdf_url:
             try:
                 response = requests.get(pdf_url, stream=True)
@@ -64,7 +49,7 @@ def extract_pdf():
                     return jsonify({'error': 'URL does not point to a PDF file.'}), 400
 
                 pdf_file_data = response.content
-                filename = pdf_url.split('/')[-1] # Extract filename from URL
+                filename = pdf_url.split('/')[-1]
                 if not filename.lower().endswith('.pdf'):
                     filename = "downloaded_pdf.pdf"
             except requests.exceptions.RequestException as e:
@@ -90,31 +75,23 @@ def extract_pdf():
             })
         doc.close()
 
+        # Added for direct use by LLM functions
         full_extracted_text = "\n".join([p['text'] for p in extracted_text_per_page])
 
-        # --- MODIFIED: Include original_mode and original_filename in the response ---
-        response_payload = {
+        return jsonify({
             'status': 'success',
-            'filename': original_filename_input if original_filename_input else filename, # Use original_filename_input if available
-            'full_text': full_extracted_text,
+            'filename': filename,
+            'full_text': full_extracted_text, # This is the key for LLM input
             'pages': extracted_text_per_page,
             'message': 'Text extracted successfully. Use the full_text for summarization or MCQ generation.'
-        }
-        
-        if original_mode is not None:
-            response_payload['original_mode'] = original_mode
-        if original_filename_input is not None:
-            response_payload['original_filename'] = original_filename_input
-
-        return jsonify(response_payload), 200
-        # --- END MODIFIED ---
+        }), 200
 
     except fitz.FileDataError as e:
         return jsonify({'error': f'Invalid PDF file or corrupted data: {str(e)}'}), 400
     except Exception as e:
         return jsonify({'error': f'An unexpected error occurred during PDF processing: {str(e)}'}), 500
 
-# --- LLM Integration Functions (rest of your code remains unchanged) ---
+# --- LLM Integration Functions ---
 
 # Get your OpenRouter API Key from environment variables
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -185,6 +162,37 @@ def summarize_text():
         'summary': summary
     }), 200
 
+# --- START of added /highlight endpoint ---
+@app.route('/highlight', methods=['POST'])
+def highlight_text():
+    """
+    Endpoint to highlight key phrases/sentences in text provided in the request body.
+    Expects JSON: {"text": "Your document text here"}
+    """
+    data = request.get_json()
+    text_to_highlight = data.get('text')
+
+    if not text_to_highlight:
+        return jsonify({'error': 'No text provided for highlighting.'}), 400
+
+    prompt_messages = [
+        {"role": "system", "content": "You are a helpful assistant that identifies and extracts the most important sentences or phrases from a given text. Return only the highlighted sentences/phrases as a bulleted list."},
+        {"role": "user", "content": f"Extract the key highlights from the following document text:\n\n{text_to_highlight}"}
+    ]
+
+    llm_response = call_llm_api(prompt_messages)
+
+    if "error" in llm_response:
+        return jsonify(llm_response), 500
+
+    highlights = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "Could not generate highlights.")
+
+    return jsonify({
+        'status': 'success',
+        'highlights': highlights
+    }), 200
+# --- END of added /highlight endpoint ---
+
 @app.route('/generate-mcqs', methods=['POST'])
 def generate_mcqs():
     """
@@ -243,7 +251,7 @@ def generate_mcqs():
         mcqs_json_str = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "{}")
         mcqs_data = json.loads(mcqs_json_str)
         if not isinstance(mcqs_data, list):
-            raise ValueError("LLM did not return a JSON array.")
+             raise ValueError("LLM did not return a JSON array.")
         
         return jsonify({
             'status': 'success',
