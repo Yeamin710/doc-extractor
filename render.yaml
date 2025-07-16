@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: pdf-extractor-api
+    env: python
+    region: oregon
+    plan: free
+    pythonVersion: 3.11.9 
+    systemPackages:
+      - build-essential
+      - libjpeg-dev
+      - zlib1g-dev
+      - libfreetype6-dev
+      - liblcms2-dev
+      - libopenjp2-7-dev
+      - libwebp-dev
+      - tesseract-ocr
+      - pkg-config
+      - libtesseract-dev
+    buildCommand: ""
+    startCommand: "gunicorn main:app"
+    envVars:
+      - key: OPENROUTER_API_KEY
+        value: "REPLACE_THIS_WITH_YOUR_KEY_IN_RENDER_DASHBOARD"
