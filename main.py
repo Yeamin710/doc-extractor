@@ -127,9 +127,6 @@ PREFERRED_LLM_MODELS = [
     "google/gemma-2-9b-it:free" # Third choice (fallback 2)
 ]
 
-# Note: The LLM_MODEL variable is no longer used directly as we iterate through PREFERRED_LLM_MODELS
-# LLM_MODEL = "mistralai/mistral-7b-instruct" # This line can be removed or commented out
-
 def call_llm_api(prompt_messages):
     """
     Helper function to make a call to the OpenRouter API with fallback models.
@@ -179,9 +176,23 @@ def summarize_text():
     if not text_to_summarize:
         return jsonify({'error': 'No text provided for summarization.'}), 400
 
+    # Improved prompt for summarization (longer)
+    summarize_prompt = f"""
+    You are an expert summarizer. Your task is to create a comprehensive and accurate summary of the provided document text.
+    The summary should capture all main points and critical information without unnecessary details.
+    Aim for a summary that is typically 5-8 sentences long, ensuring good coverage of the document.
+
+    Document Text:
+    ---
+    {text_to_summarize}
+    ---
+
+    Please provide the summary directly.
+    """
+
     prompt_messages = [
         {"role": "system", "content": "You are a helpful assistant that summarizes text concisely."},
-        {"role": "user", "content": f"Summarize the following document text:\n\n{text_to_summarize}"}
+        {"role": "user", "content": summarize_prompt}
     ]
 
     llm_response = call_llm_api(prompt_messages)
@@ -208,9 +219,23 @@ def highlight_text():
     if not text_to_highlight:
         return jsonify({'error': 'No text provided for highlighting.'}), 400
 
+    # Improved prompt for highlighting
+    highlight_prompt = f"""
+    You are an intelligent text analyzer. Your task is to extract the most important and salient sentences or key phrases from the provided document text.
+    Focus on information that is critical to understanding the core content.
+    Present the extracted highlights as a clear, concise bulleted list. Do not add any introductory or concluding remarks.
+
+    Document Text:
+    ---
+    {text_to_highlight}
+    ---
+
+    Please provide the highlights as a bulleted list.
+    """
+
     prompt_messages = [
         {"role": "system", "content": "You are a helpful assistant that identifies and extracts the most important sentences or phrases from a given text. Return only the highlighted sentences/phrases as a bulleted list."},
-        {"role": "user", "content": f"Extract the key highlights from the following document text:\n\n{text_to_highlight}"}
+        {"role": "user", "content": highlight_prompt}
     ]
 
     llm_response = call_llm_api(prompt_messages)
@@ -233,7 +258,7 @@ def generate_mcqs():
     """
     data = request.get_json()
     text_for_mcq = data.get('text')
-    num_questions = data.get('num_questions', 3) # Default to 3 questions
+    num_questions = data.get('num_questions', 5) # Default to 5 questions (at least 5)
 
     if not text_for_mcq:
         return jsonify({'error': 'No text provided for MCQ generation.'}), 400
@@ -241,36 +266,35 @@ def generate_mcqs():
     if not isinstance(num_questions, int) or num_questions <= 0:
         return jsonify({'error': 'num_questions must be a positive integer.'}), 400
 
+    # Improved prompt for MCQ generation
     mcq_prompt = f"""
-    Generate {num_questions} multiple-choice questions (MCQs) with 4 options (A, B, C, D) and indicate the correct answer.
-    The questions should be based on the following text:
+    You are an expert at creating challenging and clear multiple-choice questions (MCQs) from provided text.
+    Generate exactly {num_questions} MCQs. Each question must have 4 distinct options (A, B, C, D), and only one correct answer.
+    Ensure the questions are directly answerable from the text and cover different aspects of the content.
+    Your response MUST be a valid JSON array of objects. Do not include any other text, explanations, or formatting outside the JSON.
 
+    Text to generate MCQs from:
     ---
     {text_for_mcq}
     ---
 
-    Format the output as a JSON array of objects, where each object has:
-    "question": "The question text",
-    "options": ["A) option A", "B) option B", "C) option C", "D) option D"],
-    "correct_answer": "A" (or B, C, D)
-
-    Example JSON structure:
+    JSON Output Format:
     [
       {{
-        "question": "What is the capital of France?",
-        "options": ["A) Berlin", "B) Paris", "C) Rome", "D) Madrid"],
-        "correct_answer": "B"
+        "question": "The question text here?",
+        "options": ["A) Option A", "B) Option B", "C) Option C", "D) Option D"],
+        "correct_answer": "A"
       }},
       {{
-        "question": "Which planet is known as the Red Planet?",
-        "options": ["A) Earth", "B) Mars", "C) Jupiter", "D) Venus"],
-        "correct_answer": "B"
+        "question": "Another question?",
+        "options": ["A) Yes", "B) No", "C) Maybe", "D) Unsure"],
+        "correct_answer": "C"
       }}
     ]
     """
 
     prompt_messages = [
-        {"role": "system", "content": "You are an expert at creating multiple-choice questions from provided text, always responding in valid JSON."},
+        {"role": "system", "content": "You are an expert at creating multiple-choice questions from provided text, always responding in valid JSON and nothing else."},
         {"role": "user", "content": mcq_prompt}
     ]
 
