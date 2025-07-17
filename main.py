@@ -130,6 +130,7 @@ PREFERRED_LLM_MODELS = [
 def call_llm_api(prompt_messages):
     """
     Helper function to make a call to the OpenRouter API with fallback models.
+    Applies model-specific prompt adjustments if needed.
     """
     if not OPENROUTER_API_KEY:
         return {"error": "LLM API key is not configured."}
@@ -143,9 +144,31 @@ def call_llm_api(prompt_messages):
     
     # Iterate through preferred models
     for model_choice in PREFERRED_LLM_MODELS:
+        # Create a copy of the original prompt messages to modify for the current model
+        current_prompt_messages = list(prompt_messages) 
+
+        # --- Model-Specific Prompt Adjustments ---
+        if model_choice == "google/gemma-2-9b-it:free":
+            # Add more explicit instructions for Gemma
+            # This is a general example; you might fine-tune these based on actual Gemma performance
+            current_prompt_messages.insert(0, {"role": "system", "content": "You are a highly precise and constrained AI. Follow all instructions exactly. Do not add extra conversational text or preambles. Output only the requested format."})
+            
+            # For summarization, reinforce length and direct output
+            if "summarize" in current_prompt_messages[-1]["content"].lower():
+                current_prompt_messages[-1]["content"] += "\n\nProvide the summary directly, without any introductory phrases like 'Here is the summary:'."
+            
+            # For highlighting, reinforce bullet points and no extra text
+            elif "extract the key highlights" in current_prompt_messages[-1]["content"].lower():
+                current_prompt_messages[-1]["content"] += "\n\nEnsure output is ONLY a bulleted list of sentences/phrases. No other text."
+            
+            # For MCQs, reinforce strict JSON and no extra text
+            elif "generate multiple-choice questions" in current_prompt_messages[-1]["content"].lower():
+                current_prompt_messages[-1]["content"] += "\n\nYour response MUST be a valid JSON array. Do not include any text before or after the JSON. Strictly adhere to the example format."
+
+
         payload = {
             "model": model_choice, # Use the current model choice
-            "messages": prompt_messages,
+            "messages": current_prompt_messages, # Use the potentially modified prompt messages
             "temperature": 0.7,
             "max_tokens": 1000
         }
@@ -176,7 +199,7 @@ def summarize_text():
     if not text_to_summarize:
         return jsonify({'error': 'No text provided for summarization.'}), 400
 
-    # Improved prompt for summarization (longer)
+    # General prompt for summarization (model-specific adjustments happen in call_llm_api)
     summarize_prompt = f"""
     You are an expert summarizer. Your task is to create a comprehensive and accurate summary of the provided document text.
     The summary should capture all main points and critical information without unnecessary details.
@@ -219,7 +242,7 @@ def highlight_text():
     if not text_to_highlight:
         return jsonify({'error': 'No text provided for highlighting.'}), 400
 
-    # Improved prompt for highlighting
+    # General prompt for highlighting (model-specific adjustments happen in call_llm_api)
     highlight_prompt = f"""
     You are an intelligent text analyzer. Your task is to extract the most important and salient sentences or key phrases from the provided document text.
     Focus on information that is critical to understanding the core content.
@@ -266,7 +289,7 @@ def generate_mcqs():
     if not isinstance(num_questions, int) or num_questions <= 0:
         return jsonify({'error': 'num_questions must be a positive integer.'}), 400
 
-    # Improved prompt for MCQ generation
+    # General prompt for MCQ generation (model-specific adjustments happen in call_llm_api)
     mcq_prompt = f"""
     You are an expert at creating challenging and clear multiple-choice questions (MCQs) from provided text.
     Generate exactly {num_questions} MCQs. Each question must have 4 distinct options (A, B, C, D), and only one correct answer.
