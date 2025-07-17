@@ -150,18 +150,12 @@ def call_llm_api(prompt_messages):
         # --- Model-Specific Prompt Adjustments ---
         if model_choice == "google/gemma-2-9b-it:free":
             # Add more explicit instructions for Gemma
-            # This is a general example; you might fine-tune these based on actual Gemma performance
             current_prompt_messages.insert(0, {"role": "system", "content": "You are a highly precise and constrained AI. Follow all instructions exactly. Do not add extra conversational text or preambles. Output only the requested format."})
             
-            # For summarization, reinforce length and direct output
             if "summarize" in current_prompt_messages[-1]["content"].lower():
                 current_prompt_messages[-1]["content"] += "\n\nProvide the summary directly, without any introductory phrases like 'Here is the summary:'."
-            
-            # For highlighting, reinforce bullet points and no extra text
             elif "extract the key highlights" in current_prompt_messages[-1]["content"].lower():
                 current_prompt_messages[-1]["content"] += "\n\nEnsure output is ONLY a bulleted list of sentences/phrases. No other text."
-            
-            # For MCQs, reinforce strict JSON and no extra text
             elif "generate multiple-choice questions" in current_prompt_messages[-1]["content"].lower():
                 current_prompt_messages[-1]["content"] += "\n\nYour response MUST be a valid JSON array. Do not include any text before or after the JSON. Strictly adhere to the example format."
 
@@ -187,19 +181,19 @@ def call_llm_api(prompt_messages):
     # If all preferred models fail
     return {"error": "All preferred LLM API calls failed."}
 
+
 @app.route('/summarize', methods=['POST'])
 def summarize_text():
-    """
-    Endpoint to summarize text provided in the request body.
-    Expects JSON: {"text": "Your long text here"}
-    """
     data = request.get_json()
     text_to_summarize = data.get('text')
+    # Capture original_filename and original_mode from the request
+    original_filename = data.get('original_filename')
+    original_mode = data.get('original_mode')
+    full_text_input = data.get('full_text') # Capture full_text if sent
 
     if not text_to_summarize:
         return jsonify({'error': 'No text provided for summarization.'}), 400
 
-    # General prompt for summarization (model-specific adjustments happen in call_llm_api)
     summarize_prompt = f"""
     You are an expert summarizer. Your task is to create a comprehensive and accurate summary of the provided document text.
     The summary should capture all main points and critical information without unnecessary details.
@@ -225,24 +219,32 @@ def summarize_text():
     
     summary = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "Could not generate summary.")
     
-    return jsonify({
+    response_payload = {
         'status': 'success',
         'summary': summary
-    }), 200
+    }
+    # Echo back the original data
+    if original_filename is not None:
+        response_payload['original_filename'] = original_filename
+    if original_mode is not None:
+        response_payload['original_mode'] = original_mode
+    if full_text_input is not None:
+        response_payload['full_text'] = full_text_input
+
+    return jsonify(response_payload), 200
 
 @app.route('/highlight', methods=['POST'])
 def highlight_text():
-    """
-    Endpoint to highlight key phrases/sentences in text provided in the request body.
-    Expects JSON: {"text": "Your document text here"}
-    """
     data = request.get_json()
     text_to_highlight = data.get('text')
+    # Capture original_filename and original_mode from the request
+    original_filename = data.get('original_filename')
+    original_mode = data.get('original_mode')
+    full_text_input = data.get('full_text') # Capture full_text if sent
 
     if not text_to_highlight:
         return jsonify({'error': 'No text provided for highlighting.'}), 400
 
-    # General prompt for highlighting (model-specific adjustments happen in call_llm_api)
     highlight_prompt = f"""
     You are an intelligent text analyzer. Your task is to extract the most important and salient sentences or key phrases from the provided document text.
     Focus on information that is critical to understanding the core content.
@@ -268,20 +270,29 @@ def highlight_text():
 
     highlights = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "Could not generate highlights.")
 
-    return jsonify({
+    response_payload = {
         'status': 'success',
         'highlights': highlights
-    }), 200
+    }
+    # Echo back the original data
+    if original_filename is not None:
+        response_payload['original_filename'] = original_filename
+    if original_mode is not None:
+        response_payload['original_mode'] = original_mode
+    if full_text_input is not None:
+        response_payload['full_text'] = full_text_input
+
+    return jsonify(response_payload), 200
 
 @app.route('/generate-mcqs', methods=['POST'])
 def generate_mcqs():
-    """
-    Endpoint to generate MCQs from text provided in the request body.
-    Expects JSON: {"text": "Your document text here", "num_questions": 5}
-    """
     data = request.get_json()
     text_for_mcq = data.get('text')
-    num_questions = data.get('num_questions', 5) # Default to 5 questions (at least 5)
+    num_questions = data.get('num_questions', 5)
+    # Capture original_filename and original_mode from the request
+    original_filename = data.get('original_filename')
+    original_mode = data.get('original_mode')
+    full_text_input = data.get('full_text') # Capture full_text if sent
 
     if not text_for_mcq:
         return jsonify({'error': 'No text provided for MCQ generation.'}), 400
@@ -289,7 +300,6 @@ def generate_mcqs():
     if not isinstance(num_questions, int) or num_questions <= 0:
         return jsonify({'error': 'num_questions must be a positive integer.'}), 400
 
-    # General prompt for MCQ generation (model-specific adjustments happen in call_llm_api)
     mcq_prompt = f"""
     You are an expert at creating challenging and clear multiple-choice questions (MCQs) from provided text.
     Generate exactly {num_questions} MCQs. Each question must have 4 distinct options (A, B, C, D), and only one correct answer.
@@ -332,10 +342,19 @@ def generate_mcqs():
         if not isinstance(mcqs_data, list):
              raise ValueError("LLM did not return a JSON array.")
         
-        return jsonify({
+        response_payload = {
             'status': 'success',
             'mcqs': mcqs_data
-        }), 200
+        }
+        # Echo back the original data
+        if original_filename is not None:
+            response_payload['original_filename'] = original_filename
+        if original_mode is not None:
+            response_payload['original_mode'] = original_mode
+        if full_text_input is not None:
+            response_payload['full_text'] = full_text_input
+
+        return jsonify(response_payload), 200
     except json.JSONDecodeError:
         return jsonify({'error': 'LLM response was not valid JSON for MCQs. Please check the LLM output format.'}), 500
     except ValueError as e:
