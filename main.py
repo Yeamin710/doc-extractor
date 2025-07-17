@@ -119,11 +119,20 @@ if not OPENROUTER_API_KEY:
     print("WARNING: OPENROUTER_API_KEY environment variable not set. LLM features will not work.")
 
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1/chat/completions"
-LLM_MODEL = "mistralai/mistral-7b-instruct"
+
+# Define your preferred models in order of preference (Primary, Fallback 1, Fallback 2)
+PREFERRED_LLM_MODELS = [
+    "qwen/qwen-2.5-72b-instruct:free",  # Primary choice
+    "deepseek/deepseek-r1:free", # Second choice (fallback 1)
+    "google/gemma-2-9b-it:free" # Third choice (fallback 2)
+]
+
+# Note: The LLM_MODEL variable is no longer used directly as we iterate through PREFERRED_LLM_MODELS
+# LLM_MODEL = "mistralai/mistral-7b-instruct" # This line can be removed or commented out
 
 def call_llm_api(prompt_messages):
     """
-    Helper function to make a call to the OpenRouter API.
+    Helper function to make a call to the OpenRouter API with fallback models.
     """
     if not OPENROUTER_API_KEY:
         return {"error": "LLM API key is not configured."}
@@ -134,21 +143,29 @@ def call_llm_api(prompt_messages):
         "HTTP-Referer": "https://my-doc-backend.onrender.com",
         "X-Title": "PDF Processor API"
     }
-    payload = {
-        "model": LLM_MODEL,
-        "messages": prompt_messages,
-        "temperature": 0.7,
-        "max_tokens": 1000
-    }
+    
+    # Iterate through preferred models
+    for model_choice in PREFERRED_LLM_MODELS:
+        payload = {
+            "model": model_choice, # Use the current model choice
+            "messages": prompt_messages,
+            "temperature": 0.7,
+            "max_tokens": 1000
+        }
 
-    try:
-        response = requests.post(OPENROUTER_API_BASE, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        return {"error": f"LLM API call failed: {str(e)}"}
-    except Exception as e:
-        return {"error": f"An unexpected error occurred during LLM processing: {str(e)}"}
+        try:
+            response = requests.post(OPENROUTER_API_BASE, headers=headers, json=payload)
+            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            return response.json() # If successful, return the response and stop
+        except requests.exceptions.RequestException as e:
+            print(f"Warning: LLM API call failed with model {model_choice}: {str(e)}. Trying next model...")
+            # Continue to the next model in the list if this one fails
+        except Exception as e:
+            print(f"Warning: An unexpected error occurred with model {model_choice}: {str(e)}. Trying next model...")
+            # Continue to the next model in the list if this one fails
+    
+    # If all preferred models fail
+    return {"error": "All preferred LLM API calls failed."}
 
 @app.route('/summarize', methods=['POST'])
 def summarize_text():
