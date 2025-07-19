@@ -186,6 +186,9 @@ def extract_pdf():
         original_mode = data.get('original_mode')
         original_filename_input = data.get('original_filename')
         
+        # Prioritize sessionId from JSON body if present
+        session_id = data.get('sessionId', session_id)
+
         if pdf_content_base64:
             try:
                 # Decode the Base64 string to bytes
@@ -248,7 +251,7 @@ def extract_pdf():
         
         if original_mode is not None:
             response_payload['original_mode'] = original_mode
-        # NEW: Include difficulty in response if present in request data
+        # Include difficulty in response if present in request data from JSON body
         if request.is_json and 'difficulty' in data:
             response_payload['difficulty'] = data.get('difficulty')
 
@@ -426,7 +429,8 @@ def generate_mcqs():
             'original_filename': original_filename,
             'original_mode': original_mode,
             'sessionId': session_id,
-            'difficulty': difficulty # <--- ADDED THIS LINE
+            'difficulty': difficulty,
+            'full_text': full_text # <<< ADDED THIS LINE
         }
         return jsonify(response_payload), 200 
     except json.JSONDecodeError:
