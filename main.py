@@ -11,10 +11,6 @@ from flask_cors import CORS
 import fitz # PyMuPDF
 from dotenv import load_dotenv
 
-# Firebase Admin SDK imports
-import firebase_admin
-from firebase_admin import credentials, firestore
-
 # Load environment variables from .env file (for local development)
 load_dotenv()
 
@@ -408,13 +404,15 @@ def generate_mcqs():
         if not isinstance(mcqs_data, list):
             raise ValueError("LLM did not return a JSON array.")
         
-        return jsonify({
+        response_payload = { # Added this block
             'status': 'success',
             'mcqs': mcqs_data,
             'original_filename': original_filename,
             'original_mode': original_mode,
-            'sessionId': session_id # Include session ID in response
-        }), 200
+            'sessionId': session_id,
+            'difficulty': difficulty # <--- ADDED THIS LINE
+        }
+        return jsonify(response_payload), 200 # Modified this line
     except json.JSONDecodeError:
         return jsonify({'error': 'LLM response was not valid JSON for MCQs. Please check the LLM output format.'}), 500
     except ValueError as e:
