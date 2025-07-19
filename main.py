@@ -11,6 +11,10 @@ from flask_cors import CORS
 import fitz # PyMuPDF
 from dotenv import load_dotenv
 
+# Firebase Admin SDK imports
+import firebase_admin
+from firebase_admin import credentials, firestore
+
 # Load environment variables from .env file (for local development)
 load_dotenv()
 
@@ -37,10 +41,21 @@ def get_firestore_db():
     if 'firestore_db' not in g:
         try:
             firebase_credentials_json = os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY')
+            # DEBUG: Print first 100 characters of the loaded environment variable
+            print(f"DEBUG: Value of FIREBASE_SERVICE_ACCOUNT_KEY: {firebase_credentials_json[:100]}...") 
+            
             if firebase_credentials_json:
                 # Check if app is already initialized to avoid re-initialization errors
                 if not firebase_admin._apps:
-                    cred = credentials.Certificate(json.loads(firebase_credentials_json))
+                    try:
+                        # Attempt to parse the JSON string
+                        cred = credentials.Certificate(json.loads(firebase_credentials_json))
+                    except json.JSONDecodeError as e:
+                        # If JSON parsing fails, print a specific error and set db to None
+                        print(f"ERROR: JSON decoding failed for Firebase credentials: {e}")
+                        g.firestore_db = None
+                        return g.firestore_db # Exit early if credentials are bad
+                    
                     firebase_admin.initialize_app(cred)
                 g.firestore_db = firestore.client()
                 print("Firestore initialized successfully!")
@@ -48,6 +63,7 @@ def get_firestore_db():
                 print("FIREBASE_SERVICE_ACCOUNT_KEY environment variable not set. Firestore will not be available.")
                 g.firestore_db = None
         except Exception as e:
+            # Catch any other exceptions during Firestore initialization
             print(f"Error initializing Firestore: {e}")
             g.firestore_db = None
     return g.firestore_db
@@ -404,7 +420,7 @@ def generate_mcqs():
         if not isinstance(mcqs_data, list):
             raise ValueError("LLM did not return a JSON array.")
         
-        response_payload = { # Added this block
+        response_payload = { 
             'status': 'success',
             'mcqs': mcqs_data,
             'original_filename': original_filename,
@@ -412,7 +428,7 @@ def generate_mcqs():
             'sessionId': session_id,
             'difficulty': difficulty # <--- ADDED THIS LINE
         }
-        return jsonify(response_payload), 200 # Modified this line
+        return jsonify(response_payload), 200 
     except json.JSONDecodeError:
         return jsonify({'error': 'LLM response was not valid JSON for MCQs. Please check the LLM output format.'}), 500
     except ValueError as e:
