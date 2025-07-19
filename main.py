@@ -9,8 +9,8 @@ from flask import Flask, request, jsonify, g # Import g for app context
 from flask_cors import CORS
 
 import fitz # PyMuPDF - ONLY for PDF processing
-from PIL import Image # For image manipulation (needed for OCR)
-import pytesseract # For OCR
+# from PIL import Image # For image manipulation (needed for OCR) - Removed as it's not in current main.py
+# import pytesseract # For OCR - Removed as it's not in current main.py
 from dotenv import load_dotenv
 
 # Firebase Admin SDK imports
@@ -36,11 +36,13 @@ if not OPENROUTER_API_KEY:
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1/chat/completions"
 
 # Define your preferred models for general use (summarize, highlight, mcq)
-# These will be used if no specific primary models are provided, or as ultimate fallbacks.
+# Prioritizing Qwen, then the new models, then Deepseek, then Gemma
 PREFERRED_LLM_MODELS = [
-    "qwen/qwen-2.5-72b-instruct:free",  # Primary choice for general tasks
-    "deepseek/deepseek-coder-6.7b-instruct:free",
-    "google/gemma-2-9b-it:free" # Note: Gemma is also here as a general fallback
+    "qwen/qwen-2.5-72b-instruct:free",          # Primary choice for general tasks
+    "moonshotai/kimi-dev-72b:free",             # New addition, second choice
+    "mistralai/devstral-small-2505:free",       # New addition, third choice
+    "deepseek/deepseek-coder-6.7b-instruct:free", # Existing Deepseek
+    "google/gemma-2-9b-it:free"                 # Existing Gemma
 ]
 
 # --- Initialize Firestore (only once per app instance) ---
@@ -95,8 +97,8 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
     for model_choice in models_to_attempt:
         current_prompt_messages = list(prompt_messages) 
 
+        # --- Model-Specific Prompt Adjustments (if needed for specific OpenRouter models) ---
         if "gemma" in model_choice.lower():
-            # Gemma models often benefit from a very direct system prompt for constrained output
             current_prompt_messages.insert(0, {"role": "system", "content": "You are a highly precise and constrained AI. Follow all instructions exactly. Do not add extra conversational text or preambles. Output only the requested format."})
 
         payload = {
@@ -106,7 +108,7 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
             "max_tokens": 1000
         }
 
-        # DEBUG: Print the payload being sent to OpenRouter
+        # DEBUG: Print the payload being sent to OpenRouter (keeping this for debugging)
         print(f"DEBUG: Sending payload to OpenRouter for model {model_choice}: {json.dumps(payload, indent=2)}")
 
         try:
@@ -212,34 +214,12 @@ def extract_pdf():
         return jsonify({'error': 'No PDF data received.'}), 400
 
     extracted_text_per_page = []
-    full_extracted_text = ""
     try:
         doc = fitz.open(stream=pdf_file_data, filetype="pdf")
 
         for page_num in range(doc.page_count):
             page = doc[page_num]
-            text = page.get_text() # Attempt to extract text directly
-
-            # If direct text extraction yields little or no text, attempt OCR
-            if not text or len(text.strip()) < 50: # Threshold for "little text"
-                print(f"Attempting OCR for page {page_num + 1} due to low text content.")
-                pix = page.get_pixmap() # Render page to a pixmap (image)
-                img_bytes = pix.tobytes("png") # Convert pixmap to PNG bytes
-                img = Image.open(io.BytesIO(img_bytes)) # Open with PIL
-                
-                # Perform OCR
-                try:
-                    ocr_text = pytesseract.image_to_string(img)
-                    if ocr_text:
-                        text = ocr_text # Use OCR text if successful
-                        print(f"OCR successful for page {page_num + 1}.")
-                    else:
-                        print(f"OCR yielded no text for page {page_num + 1}.")
-                except pytesseract.TesseractNotFoundError:
-                    print("Tesseract executable not found. OCR will not work. Please ensure Tesseract is installed and in PATH.")
-                except Exception as ocr_e:
-                    print(f"Error during OCR for page {page_num + 1}: {ocr_e}")
-            
+            text = page.get_text()
             extracted_text_per_page.append({
                 'page_number': page_num + 1,
                 'text': text
@@ -279,7 +259,7 @@ def summarize_text():
     full_text = data.get('text')
     original_filename = data.get('original_filename', 'unknown_file')
     original_mode = data.get('original_mode', 'summarize')
-    session_id = request.args.get('sessionId', str(uuid.uuid4()))
+    session_id = data.get('sessionId', str(uuid.uuid4()))
 
     if not full_text:
         return jsonify({'error': 'No text provided for summarization.'}), 400
@@ -332,7 +312,7 @@ def highlight_text():
     full_text = data.get('text')
     original_filename = data.get('original_filename', 'unknown_file')
     original_mode = data.get('original_mode', 'highlight')
-    session_id = request.args.get('sessionId', str(uuid.uuid4()))
+    session_id = data.get('sessionId', str(uuid.uuid4()))
 
     if not full_text:
         return jsonify({'error': 'No text provided for highlighting.'}), 400
@@ -385,7 +365,7 @@ def generate_mcqs():
     full_text = data.get('text')
     original_filename = data.get('original_filename', 'unknown_file')
     original_mode = data.get('original_mode', 'mcq')
-    session_id = request.args.get('sessionId', str(uuid.uuid4()))
+    session_id = data.get('sessionId', str(uuid.uuid4()))
     
     difficulty = data.get('difficulty', 'medium').lower()
     num_questions = int(data.get('num_questions', 5))
@@ -483,9 +463,14 @@ def chat_with_document():
             return jsonify({"error": "Full text not found in document context."}), 404
 
         # Define the specific primary OpenRouter models for chat, in order of preference
+        # Prioritizing Qwen, then new models, then Llama
         chat_primary_models = [
-            "meta-llama/llama-3.2-3b-instruct:free", # First choice for chat
-            "google/gemma-2-9b-it:free"             # Second choice for chat (Gemma)
+            "qwen/qwen-2.5-72b-instruct:free",          # First choice for chat
+            "moonshotai/kimi-dev-72b:free",             # New addition, second choice
+            "mistralai/devstral-small-2505:free",       # New addition, third choice
+            "meta-llama/llama-3.2-3b-instruct:free",    # Existing Llama
+            # You can keep Gemma as a fifth fallback if you wish, but expect rate limits
+            # "google/gemma-2-9b-it:free"
         ]
 
         # REVISED PROMPT FOR CHAT - More direct for LLM, removed separate system message
@@ -496,8 +481,6 @@ Question: {user_query}
 
 Answer the question based ONLY on the provided document. If the answer is not in the document, state that it is not found. Be concise and to the point.
 """
-        # For chat, we'll try sending only the user message with the full context and instructions
-        # This sometimes works better for specific models on OpenRouter
         prompt_messages = [
             {"role": "user", "content": chat_prompt}
         ]
