@@ -310,7 +310,8 @@ def summarize_text():
         'summary': summary,
         'original_filename': original_filename,
         'original_mode': original_mode,
-        'sessionId': session_id # Include session ID in response
+        'sessionId': session_id, # Include session ID in response
+        'full_text': full_text # <<< ADDED THIS LINE for summarize
     }), 200
 
 @app.route('/highlight', methods=['POST'])
@@ -357,7 +358,8 @@ def highlight_text():
         'highlights': highlights,
         'original_filename': original_filename,
         'original_mode': original_mode,
-        'sessionId': session_id # Include session ID in response
+        'sessionId': session_id, # Include session ID in response
+        'full_text': full_text # <<< ADDED THIS LINE for highlight
     }), 200
 
 @app.route('/generate-mcqs', methods=['POST'])
@@ -430,7 +432,7 @@ def generate_mcqs():
             'original_mode': original_mode,
             'sessionId': session_id,
             'difficulty': difficulty,
-            'full_text': full_text # <<< ADDED THIS LINE
+            'full_text': full_text 
         }
         return jsonify(response_payload), 200 
     except json.JSONDecodeError:
