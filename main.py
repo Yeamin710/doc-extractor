@@ -3,6 +3,7 @@ import io
 import json
 import uuid # Import uuid for generating session IDs
 import requests # Needed for OpenRouter API calls
+import base64 # Import base64 for decoding
 
 from flask import Flask, request, jsonify, g # Import g for app context
 from flask_cors import CORS
@@ -82,7 +83,7 @@ def call_llm_api(prompt_messages):
         
         # Example: If Gemma needs a very strict system prompt or specific turn structure
         if "gemma" in model_choice.lower():
-             # This is a general example; you might fine-tune these based on actual Gemma performance
+            # This is a general example; you might fine-tune these based on actual Gemma performance
             current_prompt_messages.insert(0, {"role": "system", "content": "You are a highly precise and constrained AI. Follow all instructions exactly. Do not add extra conversational text or preambles. Output only the requested format."})
             # You might also adjust the last user message to fit Gemma's specific instruction following
             # For instance, if the last message is a JSON request, ensure it's very clean.
@@ -152,6 +153,7 @@ def extract_pdf():
     original_filename_input = None
     session_id = request.args.get('sessionId', str(uuid.uuid4())) # Get from query param or generate new
 
+    # Check for multipart/form-data (file upload)
     if 'file' in request.files:
         file = request.files['file']
         if file.filename == '':
@@ -163,13 +165,26 @@ def extract_pdf():
             original_filename_input = request.form.get('original_filename')
         else:
             return jsonify({'error': 'Invalid file type. Only PDF files are allowed.'}), 400
+    # Check for JSON payload
     elif request.is_json:
         data = request.get_json()
         pdf_url = data.get('pdf_url')
+        # NEW: Handle Base64 encoded PDF content
+        pdf_content_base64 = data.get('file_content_base64') 
         original_mode = data.get('original_mode')
         original_filename_input = data.get('original_filename')
-
-        if pdf_url:
+        
+        if pdf_content_base64:
+            try:
+                # Decode the Base64 string to bytes
+                pdf_file_data = base64.b64decode(pdf_content_base64)
+                # Use the provided filename or default
+                filename = original_filename_input or "uploaded_base64_pdf.pdf" 
+                if not allowed_file(filename):
+                    return jsonify({'error': 'Invalid file extension for Base64 PDF. Must be .pdf'}), 400
+            except Exception as e:
+                return jsonify({'error': f'Failed to decode Base64 PDF content: {str(e)}'}), 400
+        elif pdf_url:
             try:
                 response = requests.get(pdf_url, stream=True)
                 response.raise_for_status()
@@ -184,9 +199,9 @@ def extract_pdf():
             except requests.exceptions.RequestException as e:
                 return jsonify({'error': f'Failed to download PDF from URL: {str(e)}'}), 400
         else:
-            return jsonify({'error': 'No file uploaded or "pdf_url" provided in JSON payload.'}), 400
+            return jsonify({'error': 'No file uploaded, "pdf_url", or "file_content_base64" provided in JSON payload.'}), 400
     else:
-        return jsonify({'error': 'Unsupported media type. Please upload a file or send JSON with "pdf_url".'}), 415
+        return jsonify({'error': 'Unsupported media type. Please upload a file or send JSON with "pdf_url" or "file_content_base64".'}), 415
 
     if not pdf_file_data:
         return jsonify({'error': 'No PDF data received.'}), 400
@@ -221,6 +236,10 @@ def extract_pdf():
         
         if original_mode is not None:
             response_payload['original_mode'] = original_mode
+        # NEW: Include difficulty in response if present in request data
+        if request.is_json and 'difficulty' in data:
+            response_payload['difficulty'] = data.get('difficulty')
+
 
         return jsonify(response_payload), 200
 
@@ -387,7 +406,7 @@ def generate_mcqs():
         mcqs_json_str = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "{}")
         mcqs_data = json.loads(mcqs_json_str)
         if not isinstance(mcqs_data, list):
-             raise ValueError("LLM did not return a JSON array.")
+            raise ValueError("LLM did not return a JSON array.")
         
         return jsonify({
             'status': 'success',
