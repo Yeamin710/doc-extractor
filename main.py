@@ -1,14 +1,14 @@
 import os
 import io
 import json
-import uuid
-import requests
-import base64
+import uuid # Import uuid for generating session IDs
+import requests # Needed for OpenRouter API calls
+import base64 # Import base64 for decoding
 
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g # Import g for app context
 from flask_cors import CORS
 
-import fitz # For PDF processing
+import fitz # PyMuPDF - ONLY for PDF processing
 from PIL import Image # For image manipulation (needed for OCR)
 import pytesseract # For OCR
 from dotenv import load_dotenv
@@ -26,7 +26,7 @@ from firebase_admin import credentials, firestore
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app) # Enable CORS for all routes
 
 # --- Configure OpenRouter API ---
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -36,13 +36,14 @@ if not OPENROUTER_API_KEY:
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1/chat/completions"
 
 # Define your preferred models for general use (summarize, highlight, mcq)
+# These will be used if no specific primary models are provided, or as ultimate fallbacks.
 PREFERRED_LLM_MODELS = [
-    "qwen/qwen-2.5-72b-instruct:free",
+    "qwen/qwen-2.5-72b-instruct:free",  # Primary choice for general tasks
     "deepseek/deepseek-coder-6.7b-instruct:free",
-    "google/gemma-2-9b-it:free"
+    "google/gemma-2-9b-it:free" # Note: Gemma is also here as a general fallback
 ]
 
-# --- Initialize Firestore ---
+# --- Initialize Firestore (only once per app instance) ---
 def get_firestore_db():
     if 'firestore_db' not in g:
         try:
@@ -71,6 +72,11 @@ def get_firestore_db():
 
 # --- Helper Function to Call LLM API (OpenRouter with Fallback) ---
 def call_llm_api(prompt_messages, primary_models_to_try=None):
+    """
+    Helper function to make a call to the OpenRouter API with fallback models.
+    If primary_models_to_try (a list) is provided, it attempts to use those models first in order.
+    If all primary models fail, it then falls back to PREFERRED_LLM_MODELS.
+    """
     if not OPENROUTER_API_KEY:
         return {"error": "LLM API key is not configured."}
 
@@ -84,12 +90,13 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
     models_to_attempt = []
     if primary_models_to_try:
         models_to_attempt.extend(primary_models_to_try)
-    models_to_attempt.extend(PREFERRED_LLM_MODELS)
+    models_to_attempt.extend(PREFERRED_LLM_MODELS) # These are the ultimate fallbacks
 
     for model_choice in models_to_attempt:
         current_prompt_messages = list(prompt_messages) 
 
         if "gemma" in model_choice.lower():
+            # Gemma models often benefit from a very direct system prompt for constrained output
             current_prompt_messages.insert(0, {"role": "system", "content": "You are a highly precise and constrained AI. Follow all instructions exactly. Do not add extra conversational text or preambles. Output only the requested format."})
 
         payload = {
@@ -98,6 +105,9 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
             "temperature": 0.7,
             "max_tokens": 1000
         }
+
+        # DEBUG: Print the payload being sent to OpenRouter
+        print(f"DEBUG: Sending payload to OpenRouter for model {model_choice}: {json.dumps(payload, indent=2)}")
 
         try:
             response = requests.post(OPENROUTER_API_BASE, headers=headers, json=payload)
@@ -269,7 +279,7 @@ def summarize_text():
     full_text = data.get('text')
     original_filename = data.get('original_filename', 'unknown_file')
     original_mode = data.get('original_mode', 'summarize')
-    session_id = data.get('sessionId', str(uuid.uuid4()))
+    session_id = request.args.get('sessionId', str(uuid.uuid4()))
 
     if not full_text:
         return jsonify({'error': 'No text provided for summarization.'}), 400
@@ -277,7 +287,6 @@ def summarize_text():
     if not store_document_data(session_id, full_text, original_filename, original_mode):
         return jsonify({"error": "Failed to store document data for session"}), 500
 
-    # UPDATED PROMPT FOR SUMMARIZATION
     summarize_prompt = f"""You are an expert summarizer.
 Your task is to create a comprehensive and accurate summary of the provided document text.
 
@@ -323,7 +332,7 @@ def highlight_text():
     full_text = data.get('text')
     original_filename = data.get('original_filename', 'unknown_file')
     original_mode = data.get('original_mode', 'highlight')
-    session_id = data.get('sessionId', str(uuid.uuid4()))
+    session_id = request.args.get('sessionId', str(uuid.uuid4()))
 
     if not full_text:
         return jsonify({'error': 'No text provided for highlighting.'}), 400
@@ -331,7 +340,6 @@ def highlight_text():
     if not store_document_data(session_id, full_text, original_filename, original_mode):
         return jsonify({"error": "Failed to store document data for session"}), 500
 
-    # UPDATED PROMPT FOR HIGHLIGHTING
     highlight_prompt = f"""You are an intelligent text analyzer.
 Your task is to extract the most important and salient sentences or key phrases from the provided document text.
 
@@ -377,7 +385,7 @@ def generate_mcqs():
     full_text = data.get('text')
     original_filename = data.get('original_filename', 'unknown_file')
     original_mode = data.get('original_mode', 'mcq')
-    session_id = data.get('sessionId', str(uuid.uuid4()))
+    session_id = request.args.get('sessionId', str(uuid.uuid4()))
     
     difficulty = data.get('difficulty', 'medium').lower()
     num_questions = int(data.get('num_questions', 5))
@@ -480,28 +488,17 @@ def chat_with_document():
             "google/gemma-2-9b-it:free"             # Second choice for chat (Gemma)
         ]
 
-        # UPDATED PROMPT FOR CHAT
-        chat_prompt = f"""You are a highly knowledgeable and helpful AI assistant.
-Your primary goal is to answer questions *strictly based on the provided document content*.
-
-Document Content:
----
+        # REVISED PROMPT FOR CHAT - More direct for LLM, removed separate system message
+        chat_prompt = f"""Document:
 {full_text}
----
 
-Instructions for your response:
-1.  **Answer concisely and directly.** Get straight to the point.
-2.  **Only use information found within the "Document Content" provided above.**
-3.  **Do NOT invent or hallucinate information.**
-4.  **If the answer to the user's question is NOT present in the document, clearly state that you cannot find the information in the provided text.** Do not try to guess or provide external knowledge.
-5.  Maintain a helpful and informative tone.
+Question: {user_query}
 
-User's Question: {user_query}
-
-Assistant's Answer:"""
-        
+Answer the question based ONLY on the provided document. If the answer is not in the document, state that it is not found. Be concise and to the point.
+"""
+        # For chat, we'll try sending only the user message with the full context and instructions
+        # This sometimes works better for specific models on OpenRouter
         prompt_messages = [
-            {"role": "system", "content": "You are a helpful assistant that answers questions based on provided document content."},
             {"role": "user", "content": chat_prompt}
         ]
 
