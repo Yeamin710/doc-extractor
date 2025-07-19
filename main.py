@@ -1,25 +1,32 @@
 import os
 import io
 import json
-import uuid # Import uuid for generating session IDs
-import requests # Needed for OpenRouter API calls
-import base64 # Import base64 for decoding
+import uuid
+import requests
+import base64
 
-from flask import Flask, request, jsonify, g # Import g for app context
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 
-import fitz # PyMuPDF - ONLY for PDF processing
+import fitz # For PDF processing
+from PIL import Image # For image manipulation (needed for OCR)
+import pytesseract # For OCR
 from dotenv import load_dotenv
 
 # Firebase Admin SDK imports
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+# --- Configure Tesseract Path (for local development/testing only) ---
+# On Render, Tesseract will be in your PATH automatically if installed via apt-get
+# If you run locally and Tesseract is not found, you might need to set this:
+# pytesseract.pytesseract.tesseract_cmd = r'/path/to/tesseract' # e.g., r'C:\Program Files\Tesseract-OCR\tesseract.exe' for Windows
+
 # Load environment variables from .env file (for local development)
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app) # Enable CORS for all routes
+CORS(app)
 
 # --- Configure OpenRouter API ---
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -29,14 +36,13 @@ if not OPENROUTER_API_KEY:
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1/chat/completions"
 
 # Define your preferred models for general use (summarize, highlight, mcq)
-# These will be used if no specific primary models are provided, or as ultimate fallbacks.
 PREFERRED_LLM_MODELS = [
-    "qwen/qwen-2.5-72b-instruct:free",  # Primary choice for general tasks
+    "qwen/qwen-2.5-72b-instruct:free",
     "deepseek/deepseek-coder-6.7b-instruct:free",
-    "google/gemma-2-9b-it:free" # Note: Gemma is also here as a general fallback
+    "google/gemma-2-9b-it:free"
 ]
 
-# --- Initialize Firestore (only once per app instance) ---
+# --- Initialize Firestore ---
 def get_firestore_db():
     if 'firestore_db' not in g:
         try:
@@ -65,11 +71,6 @@ def get_firestore_db():
 
 # --- Helper Function to Call LLM API (OpenRouter with Fallback) ---
 def call_llm_api(prompt_messages, primary_models_to_try=None):
-    """
-    Helper function to make a call to the OpenRouter API with fallback models.
-    If primary_models_to_try (a list) is provided, it attempts to use those models first in order.
-    If all primary models fail, it then falls back to PREFERRED_LLM_MODELS.
-    """
     if not OPENROUTER_API_KEY:
         return {"error": "LLM API key is not configured."}
 
@@ -83,12 +84,11 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
     models_to_attempt = []
     if primary_models_to_try:
         models_to_attempt.extend(primary_models_to_try)
-    models_to_attempt.extend(PREFERRED_LLM_MODELS) # These are the ultimate fallbacks
+    models_to_attempt.extend(PREFERRED_LLM_MODELS)
 
     for model_choice in models_to_attempt:
         current_prompt_messages = list(prompt_messages) 
 
-        # --- Model-Specific Prompt Adjustments (if needed for specific OpenRouter models) ---
         if "gemma" in model_choice.lower():
             current_prompt_messages.insert(0, {"role": "system", "content": "You are a highly precise and constrained AI. Follow all instructions exactly. Do not add extra conversational text or preambles. Output only the requested format."})
 
@@ -133,7 +133,7 @@ def store_document_data(session_id, full_text, original_filename, original_mode)
 
 # --- API Endpoints ---
 
-ALLOWED_EXTENSIONS = {'pdf'} # Only PDF allowed
+ALLOWED_EXTENSIONS = {'pdf'}
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -202,12 +202,34 @@ def extract_pdf():
         return jsonify({'error': 'No PDF data received.'}), 400
 
     extracted_text_per_page = []
+    full_extracted_text = ""
     try:
         doc = fitz.open(stream=pdf_file_data, filetype="pdf")
 
         for page_num in range(doc.page_count):
             page = doc[page_num]
-            text = page.get_text()
+            text = page.get_text() # Attempt to extract text directly
+
+            # If direct text extraction yields little or no text, attempt OCR
+            if not text or len(text.strip()) < 50: # Threshold for "little text"
+                print(f"Attempting OCR for page {page_num + 1} due to low text content.")
+                pix = page.get_pixmap() # Render page to a pixmap (image)
+                img_bytes = pix.tobytes("png") # Convert pixmap to PNG bytes
+                img = Image.open(io.BytesIO(img_bytes)) # Open with PIL
+                
+                # Perform OCR
+                try:
+                    ocr_text = pytesseract.image_to_string(img)
+                    if ocr_text:
+                        text = ocr_text # Use OCR text if successful
+                        print(f"OCR successful for page {page_num + 1}.")
+                    else:
+                        print(f"OCR yielded no text for page {page_num + 1}.")
+                except pytesseract.TesseractNotFoundError:
+                    print("Tesseract executable not found. OCR will not work. Please ensure Tesseract is installed and in PATH.")
+                except Exception as ocr_e:
+                    print(f"Error during OCR for page {page_num + 1}: {ocr_e}")
+            
             extracted_text_per_page.append({
                 'page_number': page_num + 1,
                 'text': text
