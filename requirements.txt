@@ -1,9 +1,9 @@
 Flask==2.3.0
 requests==2.31.0
 PyMuPDF==1.23.8
-Pillow==10.3.0  
-pytesseract==0.3.10 
+Pillow==10.3.0
+pytesseract==0.3.10
 gunicorn==22.0.0
-firebase-admin==6.4.2
-python-dotenv==1.0.1 
+firebase-admin==6.5.0 # Corrected version
+python-dotenv==1.0.1
 Flask-CORS==4.0.1
