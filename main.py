@@ -8,6 +8,7 @@ import re # Import regex for parsing LLM response
 
 from flask import Flask, request, jsonify, g # Import g for app context
 from flask_cors import CORS
+from werkzeug.exceptions import RequestEntityTooLarge # NEW: Import this exception
 
 import fitz # PyMuPDF - ONLY for PDF processing
 from PIL import Image # For image manipulation (needed for OCR)
@@ -28,6 +29,12 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app) # Enable CORS for all routes
+
+# --- NEW: Set max content length for uploads (10 MB) ---
+# This configures Flask to reject incoming requests with a body larger than 10MB.
+# This is a crucial backend-side validation for file size.
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 # 10 Megabytes
+# --- END NEW ---
 
 # --- Global API Configurations ---
 # These are loaded once at startup and passed to functions
@@ -133,6 +140,7 @@ def call_llm_api(prompt_messages, api_configs, primary_models_to_try=None):
             }
             gemini_contents = []
             for msg in current_prompt_messages:
+                # Gemini expects 'user' or 'model' roles. Map 'system' to 'user' for simplicity in chat history.
                 role = "user" if msg["role"] == "user" or msg["role"] == "system" else "model"
                 gemini_contents.append({"role": role, "parts": [{"text": msg["content"]}]})
             
@@ -247,6 +255,16 @@ def store_document_data(session_id, full_text, original_filename, original_mode)
     except Exception as e:
         print(f"Error storing document data in Firestore for session {session_id}: {e}")
         return False
+
+# --- Error Handler for large files ---
+# NEW: This catches the RequestEntityTooLarge exception raised by Flask when the upload exceeds MAX_CONTENT_LENGTH.
+@app.errorhandler(RequestEntityTooLarge)
+def handle_oversize_error(error):
+    # Log the error for debugging on the server side
+    print(f"ERROR: File upload too large: {error}")
+    # Return a JSON response with a 413 status code (Payload Too Large)
+    return jsonify({'error': 'File too large. Maximum size is 10MB.'}), 413
+
 
 # --- API Endpoints ---
 
@@ -605,55 +623,69 @@ def chat_with_document():
         doc = doc_ref.get()
 
         if not doc.exists:
-            return jsonify({"error": "Document context not found for this session."}), 404
+            print(f"ERROR: Document context not found for session {session_id}.")
+            return jsonify({"error": "Document context not found for this session. Please upload a document first."}), 404
 
         full_text = doc.to_dict().get('full_text')
         if not full_text:
-            return jsonify({"error": "Full text not found in document context."}), 404
+            print(f"ERROR: Full text not found in document context for session {session_id}.")
+            return jsonify({"error": "Full text not found in document context. Document might be empty."}), 404
+
+        print(f"DEBUG: Chat request: Session ID: {session_id}, Query: '{user_query}'")
+        print(f"DEBUG: Retrieved full_text for chat (first 200 chars): '{full_text[:200]}...'")
 
         # Define the specific primary OpenRouter models for chat, in order of preference
         chat_primary_models = [
-            "qwen/qwen-2.5-72b-instruct:free",          # First choice (OpenRouter)
-            "moonshotai/kimi-dev-72b:free",             # New addition, second choice
-            "mistralai/devstral-small-2505:free",       # New addition, third choice
-            "meta-llama/llama-3.2-3b-instruct:free",    # Existing Llama
-            # AIMLAPI.com Gemma 3 models (free tier)
-            "google/gemma-3-1b-it",                      # AIMLAPI.com
-            "google/gemma-3-4b-it",                      # AIMLAPI.com
-            "google/gemma-3-12b-it",                     # AIMLAPI.com
-            "google/gemma-3-27b-it",                     # AIMLAPI.com
-            "google/gemma-3n-e4b-it",                    # AIMLAPI.com
-            # Google AI Studio (Gemini) models
-            "gemini-1.5-flash-latest",                   # Google AI Studio: Fast and cost-effective
-            "gemini-1.5-pro-latest",                     # Google AI Studio: More capable, higher cost
+            "qwen/qwen-2.5-72b-instruct:free",
+            "moonshotai/kimi-dev-72b:free",
+            "mistralai/devstral-small-2505:free",
+            "meta-llama/llama-3.2-3b-instruct:free",
+            "google/gemma-3-1b-it",
+            "google/gemma-3-4b-it",
+            "google/gemma-3-12b-it",
+            "google/gemma-3-27b-it",
+            "google/gemma-3n-e4b-it",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro-latest",
         ]
 
-        # REVISED PROMPT FOR CHAT - More direct for LLM, removed separate system message
-        chat_prompt = f"""Document:
+        chat_prompt = f"""You are an intelligent assistant designed to answer questions strictly based on the provided document text.
+
+Document Text:
+---
 {full_text}
+---
 
-Question: {user_query}
+User's Question: {user_query}
 
-Answer the question based ONLY on the provided document. If the answer is not in the document, state that it is not found. Be concise and to the point.
+Instructions:
+1.  Answer the question directly and concisely.
+2.  **Crucially, use ONLY information found within the "Document Text".**
+3.  If the answer cannot be found in the provided "Document Text", respond with: "I'm sorry, but the answer to your question is not explicitly available in the provided document."
+4.  Do not include any conversational filler, preambles, or apologies unless explicitly stating the answer is not found.
 """
         prompt_messages = [
+            {"role": "system", "content": "You are a highly constrained and precise AI assistant."},
             {"role": "user", "content": chat_prompt}
         ]
 
         llm_response = call_llm_api(prompt_messages, API_CONFIGS, primary_models_to_try=chat_primary_models)
 
         if "error" in llm_response:
+            print(f"ERROR: LLM chat call failed: {llm_response['error']}")
             return jsonify(llm_response), 500
 
         assistant_response = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "Could not generate response.")
+        
+        print(f"DEBUG: LLM Assistant Response: {assistant_response[:200]}...")
 
         return jsonify({
             "response": assistant_response,
-            "sessionId": session_id # Echo session ID
+            "sessionId": session_id
         })
     except Exception as e:
-        print(f"Error during chat interaction: {e}")
-        return jsonify({"error": f"Error during chat interaction: {e}"}), 500
+        print(f"ERROR: An unexpected error occurred during chat interaction: {e}")
+        return jsonify({"error": f"An unexpected error occurred during chat interaction: {e}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
