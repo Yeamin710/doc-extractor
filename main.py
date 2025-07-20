@@ -28,28 +28,23 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app) # Enable CORS for all routes
 
-# --- Configure OpenRouter API ---
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
-    print("WARNING: OPENROUTER_API_KEY environment variable not set. LLM features will not work.")
+# --- Global API Configurations ---
+# These are loaded once at startup and passed to functions
+API_CONFIGS = {
+    "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY"),
+    "OPENROUTER_API_BASE": "https://openrouter.ai/api/v1/chat/completions",
+    "AIML_API_KEY": os.getenv("AIML_API_KEY"),
+    "AIML_API_BASE": "https://api.aimlapi.com/v1",
+    "GOOGLE_AI_STUDIO_API_KEY": os.getenv("GOOGLE_AI_STUDIO_API_KEY"),
+    "GOOGLE_AI_STUDIO_API_BASE": "https://generativelanguage.googleapis.com/v1beta/models/",
+    "FRONTEND_URL": os.getenv("FRONTEND_URL", "https://my-doc-backend.onrender.com") # Default for Render
+}
 
-OPENROUTER_API_BASE = "https://openrouter.ai/api/v1/chat/completions"
-
-# --- Configure AIMLAPI.com API ---
-AIML_API_KEY = os.getenv("AIML_API_KEY")
-if not AIML_API_KEY:
-    print("WARNING: AIML_API_KEY environment variable not set. AIMLAPI.com LLM features will not work.")
-
-# --- Configure Google AI Studio (Gemini) API ---
-GOOGLE_AI_STUDIO_API_KEY = os.getenv("GOOGLE_AI_STUDIO_API_KEY")
-# Base URL for Google Gemini API (generative language API)
-GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/" 
-
-if not OPENROUTER_API_KEY:
+if not API_CONFIGS["OPENROUTER_API_KEY"]:
     print("WARNING: OPENROUTER_API_KEY environment variable not set. OpenRouter LLM features will not work.")
-if not AIML_API_KEY:
+if not API_CONFIGS["AIML_API_KEY"]:
     print("WARNING: AIML_API_KEY environment variable not set. AIMLAPI.com LLM features will not work.")
-if not GOOGLE_AI_STUDIO_API_KEY:
+if not API_CONFIGS["GOOGLE_AI_STUDIO_API_KEY"]:
     print("WARNING: GOOGLE_AI_STUDIO_API_KEY environment variable not set. Google AI Studio LLM features will not work.")
 
 
@@ -100,11 +95,12 @@ def get_firestore_db():
     return g.firestore_db
 
 # --- Helper Function to Call LLM API (OpenRouter, AIMLAPI.com, Google AI Studio Fallback) ---
-def call_llm_api(prompt_messages, primary_models_to_try=None):
+def call_llm_api(prompt_messages, api_configs, primary_models_to_try=None):
     """
     Helper function to make a call to LLM APIs with fallback models.
     Prioritizes primary_models_to_try (if provided), then PREFERRED_LLM_MODELS.
     Distinguishes between OpenRouter, AIMLAPI.com, and Google AI Studio models.
+    Accepts api_configs dictionary for robustness.
     """
     
     models_to_attempt = []
@@ -122,22 +118,20 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
         api_type = None 
         response_content = None # Initialize to None
 
-        if model_choice.startswith("gemini-") or model_choice.startswith("models/gemini-"): # Specific check for Google Gemini models
-            if not GOOGLE_AI_STUDIO_API_KEY:
+        # Determine API type and configuration based on model_choice
+        if model_choice.startswith("gemini-") or model_choice.startswith("models/gemini-"):
+            if not api_configs["GOOGLE_AI_STUDIO_API_KEY"]:
                 print(f"Skipping Google AI Studio model {model_choice}: API key not set.")
                 continue
             
-            api_key = GOOGLE_AI_STUDIO_API_KEY
-            # Ensure model_choice is just the model name, not "models/model_name"
+            api_key = api_configs["GOOGLE_AI_STUDIO_API_KEY"]
             model_name_for_url = model_choice.replace("models/", "") 
-            api_full_url = f"{GOOGLE_AI_STUDIO_API_BASE}{model_name_for_url}:generateContent?key={api_key}"
+            api_full_url = f"{api_configs['GOOGLE_AI_STUDIO_API_BASE']}{model_name_for_url}:generateContent?key={api_key}"
             headers = {
                 "Content-Type": "application/json"
             }
-            # Convert OpenAI-style messages to Gemini-style 'contents'
             gemini_contents = []
             for msg in current_prompt_messages:
-                # Gemini expects 'user' and 'model' roles. Convert 'system' to 'user' or handle as preamble.
                 role = "user" if msg["role"] == "user" or msg["role"] == "system" else "model"
                 gemini_contents.append({"role": role, "parts": [{"text": msg["content"]}]})
             
@@ -145,17 +139,17 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
                 "contents": gemini_contents,
                 "generationConfig": {
                     "temperature": 0.7,
-                    "maxOutputTokens": 1000 # Gemini uses maxOutputTokens
+                    "maxOutputTokens": 1000
                 }
             }
             api_type = "google_ai_studio"
 
-        elif model_choice.startswith("google/gemma-3") or model_choice.startswith("google/gemma-3n"): # Specific check for AIMLAPI.com Gemma models
-            if not AIML_API_KEY:
+        elif model_choice.startswith("google/gemma-3") or model_choice.startswith("google/gemma-3n"):
+            if not api_configs["AIML_API_KEY"]:
                 print(f"Skipping AIMLAPI.com model {model_choice}: API key not set.")
                 continue
-            api_key = AIML_API_KEY
-            api_full_url = f"{AIML_API_BASE}/chat/completions" # Corrected full endpoint
+            api_key = api_configs["AIML_API_KEY"]
+            api_full_url = f"{api_configs['AIML_API_BASE']}/chat/completions"
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
@@ -168,16 +162,16 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
             }
             api_type = "aimlapi"
 
-        elif ":" in model_choice or model_choice.count('/') > 1: # Heuristic for OpenRouter model IDs (e.g., "org/model:free")
-            if not OPENROUTER_API_KEY:
+        elif ":" in model_choice or model_choice.count('/') > 1:
+            if not api_configs["OPENROUTER_API_KEY"]:
                 print(f"Skipping OpenRouter model {model_choice}: API key not set.")
                 continue
-            api_key = OPENROUTER_API_KEY
-            api_full_url = OPENROUTER_API_BASE # OpenRouter base is already the full endpoint
+            api_key = api_configs["OPENROUTER_API_KEY"]
+            api_full_url = api_configs["OPENROUTER_API_BASE"]
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": os.getenv("FRONTEND_URL", "https://my-doc-backend.onrender.com"),
+                "HTTP-Referer": api_configs["FRONTEND_URL"],
                 "X-Title": "PDF Processor API"
             }
             request_payload = {
@@ -186,7 +180,6 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
                 "temperature": 0.7,
                 "max_tokens": 1000
             }
-            # Model-Specific Prompt Adjustments for OpenRouter (if needed)
             if "gemma" in model_choice.lower():
                 request_payload["messages"].insert(0, {"role": "system", "content": "You are a highly precise and constrained AI. Follow all instructions exactly. Do not add extra conversational text or preambles. Output only the requested format."})
             api_type = "openrouter"
@@ -195,16 +188,14 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
             print(f"Unknown model type for {model_choice}. Skipping.")
             continue
 
-        # DEBUG: Print the payload being sent to the API
         print(f"DEBUG: Sending payload to {api_full_url} for model {model_choice}: {json.dumps(request_payload, indent=2)}")
 
         try:
             response = requests.post(api_full_url, headers=headers, json=request_payload)
             response.raise_for_status()
             
-            # Parse response based on API type
             response_json = response.json()
-            print(f"DEBUG: Raw LLM response from {api_type} for model {model_choice}: {json.dumps(response_json, indent=2)}") # Added debug print
+            print(f"DEBUG: Raw LLM response from {api_type} for model {model_choice}: {json.dumps(response_json, indent=2)}")
             
             if api_type == "openrouter" or api_type == "aimlapi":
                 response_content = response_json.get("choices", [{}])[0].get("message", {}).get("content")
@@ -214,23 +205,20 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
                     if first_candidate.get("content") and first_candidate["content"].get("parts") and len(first_candidate["content"]["parts"]) > 0:
                         response_content = first_candidate["content"]["parts"][0].get("text", "")
             
-            # CRITICAL CHECK: If response_content is empty or None, treat as failure to trigger fallback
             if not response_content or not response_content.strip():
                 print(f"Warning: LLM response from {model_choice} ({api_type}) was empty or contained no usable content. Trying next model...")
-                raise ValueError("LLM returned empty or no usable content.") # Raise error to trigger fallback
+                raise ValueError("LLM returned empty or no usable content.")
             
-            # If content is found, return the parsed response
             if api_type == "openrouter" or api_type == "aimlapi":
-                return response_json # Return the full OpenAI-like structure
+                return response_json
             elif api_type == "google_ai_studio":
-                # For Google AI Studio, reconstruct a compatible response structure
                 return {
                     "choices": [{"message": {"content": response_content}}]
                 }
 
         except requests.exceptions.RequestException as e:
             print(f"Warning: LLM API call failed with model {model_choice} ({api_type}): {str(e)}. Trying next model...")
-        except ValueError as e: # Catch the custom ValueError for empty content
+        except ValueError as e:
             print(f"Warning: {e} with model {model_choice} ({api_type}). Trying next model...")
         except Exception as e:
             print(f"Warning: An unexpected error occurred with model {model_choice}: {str(e)}. Trying next model...")
@@ -312,7 +300,7 @@ def extract_pdf():
                 response.raise_for_status()
 
                 if 'application/pdf' not in response.headers.get('Content-Type', ''):
-                    return jsonify({'error': 'URL does not point to a PDF file.'}), 400
+                    return jsonify({'error': 'URL does to point to a PDF file.'}), 400
 
                 pdf_file_data = response.content
                 filename = pdf_url.split('/')[-1]
@@ -329,7 +317,7 @@ def extract_pdf():
         return jsonify({'error': 'No PDF data received.'}), 400
 
     extracted_text_per_page = []
-    full_extracted_text = "" # Initialize here
+    full_extracted_text = ""
     try:
         doc = fitz.open(stream=pdf_file_data, filetype="pdf")
 
@@ -431,16 +419,16 @@ Summary:
         {"role": "user", "content": summarize_prompt}
     ]
 
-    llm_response = call_llm_api(prompt_messages)
+    llm_response = call_llm_api(prompt_messages, API_CONFIGS) # Pass API_CONFIGS
 
-    print(f"DEBUG: Raw LLM response for summarize: {json.dumps(llm_response, indent=2)}") # Added debug print
+    print(f"DEBUG: Raw LLM response for summarize: {json.dumps(llm_response, indent=2)}")
 
     if "error" in llm_response:
         return jsonify(llm_response), 500
     
     summary = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "Could not generate summary.")
     
-    print(f"DEBUG: Final summary content: {summary}") # Added debug print
+    print(f"DEBUG: Final summary content: {summary}")
     
     return jsonify({
         'status': 'success',
@@ -488,7 +476,7 @@ Highlights:
         {"role": "user", "content": highlight_prompt}
     ]
 
-    llm_response = call_llm_api(prompt_messages)
+    llm_response = call_llm_api(prompt_messages, API_CONFIGS) # Pass API_CONFIGS
 
     if "error" in llm_response:
         return jsonify(llm_response), 500
@@ -555,7 +543,7 @@ def generate_mcqs():
         {"role": "user", "content": mcq_prompt}
     ]
 
-    llm_response = call_llm_api(prompt_messages)
+    llm_response = call_llm_api(prompt_messages, API_CONFIGS) # Pass API_CONFIGS
 
     if "error" in llm_response:
         return jsonify(llm_response), 500
@@ -609,12 +597,19 @@ def chat_with_document():
 
         # Define the specific primary OpenRouter models for chat, in order of preference
         chat_primary_models = [
-            "qwen/qwen-2.5-72b-instruct:free",          # First choice for chat
+            "qwen/qwen-2.5-72b-instruct:free",          # First choice (OpenRouter)
             "moonshotai/kimi-dev-72b:free",             # New addition, second choice
             "mistralai/devstral-small-2505:free",       # New addition, third choice
             "meta-llama/llama-3.2-3b-instruct:free",    # Existing Llama
-            # You can keep Gemma as a fifth fallback if you wish, but expect rate limits
-            # "google/gemma-2-9b-it:free"
+            # AIMLAPI.com Gemma 3 models (free tier)
+            "google/gemma-3-1b-it",                      # AIMLAPI.com
+            "google/gemma-3-4b-it",                      # AIMLAPI.com
+            "google/gemma-3-12b-it",                     # AIMLAPI.com
+            "google/gemma-3-27b-it",                     # AIMLAPI.com
+            "google/gemma-3n-e4b-it",                    # AIMLAPI.com
+            # Google AI Studio (Gemini) models
+            "gemini-1.5-flash-latest",                   # Google AI Studio: Fast and cost-effective
+            "gemini-1.5-pro-latest",                     # Google AI Studio: More capable, higher cost
         ]
 
         # REVISED PROMPT FOR CHAT - More direct for LLM, removed separate system message
@@ -629,7 +624,7 @@ Answer the question based ONLY on the provided document. If the answer is not in
             {"role": "user", "content": chat_prompt}
         ]
 
-        llm_response = call_llm_api(prompt_messages, primary_models_to_try=chat_primary_models)
+        llm_response = call_llm_api(prompt_messages, API_CONFIGS, primary_models_to_try=chat_primary_models) # Pass API_CONFIGS
 
         if "error" in llm_response:
             return jsonify(llm_response), 500
