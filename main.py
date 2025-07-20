@@ -4,6 +4,7 @@ import json
 import uuid # Import uuid for generating session IDs
 import requests # Needed for OpenRouter API calls
 import base64 # Import base64 for decoding
+import re # Import regex for parsing LLM response
 
 from flask import Flask, request, jsonify, g # Import g for app context
 from flask_cors import CORS
@@ -145,6 +146,7 @@ def call_llm_api(prompt_messages, api_configs, primary_models_to_try=None):
             api_type = "google_ai_studio"
 
         elif model_choice.startswith("google/gemma-3") or model_choice.startswith("google/gemma-3n"):
+            print(f"DEBUG: Inside AIMLAPI.com block. api_configs: {api_configs}")
             if not api_configs["AIML_API_KEY"]:
                 print(f"Skipping AIMLAPI.com model {model_choice}: API key not set.")
                 continue
@@ -388,7 +390,6 @@ def summarize_text():
 
     print(f"DEBUG: Summarize request received. Session ID: {session_id}, Filename: {original_filename}")
     print(f"DEBUG: Full text length for summarization: {len(full_text) if full_text else 0}")
-    # print(f"DEBUG: Full text content (first 500 chars): {full_text[:500] if full_text else 'N/A'}") # Uncomment for full text debug if needed
 
     if not full_text:
         return jsonify({'error': 'No text provided for summarization.'}), 400
@@ -419,7 +420,7 @@ Summary:
         {"role": "user", "content": summarize_prompt}
     ]
 
-    llm_response = call_llm_api(prompt_messages, API_CONFIGS) # Pass API_CONFIGS
+    llm_response = call_llm_api(prompt_messages, API_CONFIGS)
 
     print(f"DEBUG: Raw LLM response for summarize: {json.dumps(llm_response, indent=2)}")
 
@@ -476,7 +477,7 @@ Highlights:
         {"role": "user", "content": highlight_prompt}
     ]
 
-    llm_response = call_llm_api(prompt_messages, API_CONFIGS) # Pass API_CONFIGS
+    llm_response = call_llm_api(prompt_messages, API_CONFIGS)
 
     if "error" in llm_response:
         return jsonify(llm_response), 500
@@ -543,14 +544,26 @@ def generate_mcqs():
         {"role": "user", "content": mcq_prompt}
     ]
 
-    llm_response = call_llm_api(prompt_messages, API_CONFIGS) # Pass API_CONFIGS
+    llm_response = call_llm_api(prompt_messages, API_CONFIGS)
 
     if "error" in llm_response:
         return jsonify(llm_response), 500
     
     try:
         mcqs_json_str = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-        mcqs_data = json.loads(mcqs_json_str)
+        
+        # --- NEW LOGIC: Extract JSON from Markdown code block ---
+        # Use regex to find content between ```json and ```
+        match = re.search(r'```json\s*(.*?)\s*```', mcqs_json_str, re.DOTALL)
+        if match:
+            clean_mcqs_json_str = match.group(1)
+            print(f"DEBUG: Extracted clean JSON string for MCQs: {clean_mcqs_json_str[:500]}...") # Debug print
+        else:
+            # If no markdown block is found, assume the string is pure JSON or empty
+            clean_mcqs_json_str = mcqs_json_str
+            print("DEBUG: No JSON markdown block found. Assuming raw string is JSON.") # Debug print
+
+        mcqs_data = json.loads(clean_mcqs_json_str)
         if not isinstance(mcqs_data, list):
             raise ValueError("LLM did not return a JSON array.")
         
@@ -564,11 +577,14 @@ def generate_mcqs():
             'full_text': full_text 
         }
         return jsonify(response_payload), 200 
-    except json.JSONDecodeError:
-        return jsonify({'error': 'LLM response was not valid JSON for MCQs. Please check the LLM output format.'}), 500
+    except json.JSONDecodeError as e:
+        print(f"ERROR: JSON decoding failed for MCQs: {e}. Raw response: {mcqs_json_str}") # More detailed error
+        return jsonify({'error': f'LLM response was not valid JSON for MCQs. Please check the LLM output format. Error: {e}'}), 500
     except ValueError as e:
+        print(f"ERROR: Error parsing LLM response for MCQs: {e}. Raw response: {mcqs_json_str}") # More detailed error
         return jsonify({'error': f'Error parsing LLM response: {e}. Raw response: {mcqs_json_str}'}), 500
     except Exception as e:
+        print(f"ERROR: An unexpected error occurred while processing LLM MCQ response: {str(e)}") # More detailed error
         return jsonify({'error': f'An unexpected error occurred while processing LLM MCQ response: {str(e)}'}), 500
 
 @app.route('/chat', methods=['POST'])
@@ -624,7 +640,7 @@ Answer the question based ONLY on the provided document. If the answer is not in
             {"role": "user", "content": chat_prompt}
         ]
 
-        llm_response = call_llm_api(prompt_messages, API_CONFIGS, primary_models_to_try=chat_primary_models) # Pass API_CONFIGS
+        llm_response = call_llm_api(prompt_messages, API_CONFIGS, primary_models_to_try=chat_primary_models)
 
         if "error" in llm_response:
             return jsonify(llm_response), 500
