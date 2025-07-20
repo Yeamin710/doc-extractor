@@ -1,31 +1,44 @@
 import os
 import io
 import json
-import uuid
-import requests
-import base64
+import uuid # Import uuid for generating session IDs
+import requests # Needed for OpenRouter API calls
+import base64 # Import base64 for decoding
 
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g # Import g for app context
 from flask_cors import CORS
 
-import fitz
+import fitz # PyMuPDF - ONLY for PDF processing
+from PIL import Image # For image manipulation (needed for OCR)
+import pytesseract # For OCR
 from dotenv import load_dotenv
 
+# Firebase Admin SDK imports
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+# --- Configure Tesseract Path (for local development/testing only) ---
+# On Render, Tesseract will be in your PATH automatically if installed via apt-get
+# If you run locally and Tesseract is not found, you might need to set this:
+# pytesseract.pytesseract.tesseract_cmd = r'/path/to/tesseract' # e.g., r'C:\Program Files\Tesseract-OCR\tesseract.exe' for Windows
+
+# Load environment variables from .env file (for local development)
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app) # Enable CORS for all routes
 
 # --- Configure OpenRouter API ---
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    print("WARNING: OPENROUTER_API_KEY environment variable not set. LLM features will not work.")
+
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1/chat/completions"
 
 # --- Configure AIMLAPI.com API ---
 AIML_API_KEY = os.getenv("AIML_API_KEY")
-AIML_API_BASE = "https://api.aimlapi.com/v1" 
+if not AIML_API_KEY:
+    print("WARNING: AIML_API_KEY environment variable not set. AIMLAPI.com LLM features will not work.")
 
 # --- Configure Google AI Studio (Gemini) API ---
 GOOGLE_AI_STUDIO_API_KEY = os.getenv("GOOGLE_AI_STUDIO_API_KEY")
@@ -43,20 +56,20 @@ if not GOOGLE_AI_STUDIO_API_KEY:
 # Define your preferred models for general use (summarize, highlight, mcq)
 # Now includes AIMLAPI.com Gemma 3 models and Google Gemini models as fallback options.
 PREFERRED_LLM_MODELS = [
-    "qwen/qwen-2.5-72b-instruct:free",          # OpenRouter: Primary choice
-    "moonshotai/kimi-dev-72b:free",             # OpenRouter: Second choice
-    "mistralai/devstral-small-2505:free",       # OpenRouter: Third choice
+    "qwen/qwen-2.5-72b-instruct:free",           # OpenRouter: Primary choice
+    "moonshotai/kimi-dev-72b:free",              # OpenRouter: Second choice
+    "mistralai/devstral-small-2505:free",        # OpenRouter: Third choice
     "deepseek/deepseek-coder-6.7b-instruct:free", # OpenRouter: Existing Deepseek
-    "google/gemma-2-9b-it:free",                # OpenRouter: Existing Gemma
+    "google/gemma-2-9b-it:free",                 # OpenRouter: Existing Gemma
     # AIMLAPI.com Gemma 3 models (free tier)
-    "google/gemma-3-1b-it",                     # AIMLAPI.com
-    "google/gemma-3-4b-it",                     # AIMLAPI.com
-    "google/gemma-3-12b-it",                    # AIMLAPI.com
-    "google/gemma-3-27b-it",                    # AIMLAPI.com
-    "google/gemma-3n-e4b-it",                   # AIMLAPI.com
+    "google/gemma-3-1b-it",                      # AIMLAPI.com
+    "google/gemma-3-4b-it",                      # AIMLAPI.com
+    "google/gemma-3-12b-it",                     # AIMLAPI.com
+    "google/gemma-3-27b-it",                     # AIMLAPI.com
+    "google/gemma-3n-e4b-it",                    # AIMLAPI.com
     # Google AI Studio (Gemini) models
-    "gemini-1.5-flash-latest",                  # Google AI Studio: Fast and cost-effective
-    "gemini-1.5-pro-latest",                    # Google AI Studio: More capable, higher cost
+    "gemini-1.5-flash-latest",                   # Google AI Studio: Fast and cost-effective
+    "gemini-1.5-pro-latest",                     # Google AI Studio: More capable, higher cost
 ]
 
 # --- Initialize Firestore (only once per app instance) ---
@@ -64,7 +77,7 @@ def get_firestore_db():
     if 'firestore_db' not in g:
         try:
             firebase_credentials_json = os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY')
-            print(f"DEBUG: Value of FIREBASE_SERVICE_ACCOUNT_KEY: {firebase_credentials_json[:100]}...")
+            print(f"DEBUG: Value of FIREBASE_SERVICE_ACCOUNT_KEY: {firebase_credentials_json[:100]}...") 
             
             if firebase_credentials_json:
                 if not firebase_admin._apps:
@@ -190,6 +203,7 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
             
             # Parse response based on API type
             response_json = response.json()
+            print(f"DEBUG: Raw LLM response from {api_type} for model {model_choice}: {json.dumps(response_json, indent=2)}") # Added debug print
             if api_type == "openrouter" or api_type == "aimlapi":
                 # Both OpenRouter and AIMLAPI.com are assumed to return OpenAI-like structure
                 return response_json
@@ -265,7 +279,7 @@ def extract_pdf():
     elif request.is_json:
         data = request.get_json()
         pdf_url = data.get('pdf_url')
-        pdf_content_base64 = data.get('file_content_base64')
+        pdf_content_base64 = data.get('file_content_base64') 
         original_mode = data.get('original_mode')
         original_filename_input = data.get('original_filename')
         
@@ -274,7 +288,7 @@ def extract_pdf():
         if pdf_content_base64:
             try:
                 pdf_file_data = base64.b64decode(pdf_content_base64)
-                filename = original_filename_input or "uploaded_base64_pdf.pdf"
+                filename = original_filename_input or "uploaded_base64_pdf.pdf" 
                 if not allowed_file(filename):
                     return jsonify({'error': 'Invalid file extension for Base64 PDF. Must be .pdf'}), 400
             except Exception as e:
@@ -302,12 +316,34 @@ def extract_pdf():
         return jsonify({'error': 'No PDF data received.'}), 400
 
     extracted_text_per_page = []
+    full_extracted_text = "" # Initialize here
     try:
         doc = fitz.open(stream=pdf_file_data, filetype="pdf")
 
         for page_num in range(doc.page_count):
             page = doc[page_num]
-            text = page.get_text()
+            text = page.get_text() # Attempt to extract text directly
+
+            # If direct text extraction yields little or no text, attempt OCR
+            if not text or len(text.strip()) < 50: # Threshold for "little text"
+                print(f"Attempting OCR for page {page_num + 1} due to low text content.")
+                pix = page.get_pixmap() # Render page to a pixmap (image)
+                img_bytes = pix.tobytes("png") # Convert pixmap to PNG bytes
+                img = Image.open(io.BytesIO(img_bytes)) # Open with PIL
+                
+                # Perform OCR
+                try:
+                    ocr_text = pytesseract.image_to_string(img)
+                    if ocr_text:
+                        text = ocr_text # Use OCR text if successful
+                        print(f"OCR successful for page {page_num + 1}.")
+                    else:
+                        print(f"OCR yielded no text for page {page_num + 1}.")
+                except pytesseract.TesseractNotFoundError:
+                    print("Tesseract executable not found. OCR will not work. Please ensure Tesseract is installed and in PATH.")
+                except Exception as ocr_e:
+                    print(f"Error during OCR for page {page_num + 1}: {ocr_e}")
+            
             extracted_text_per_page.append({
                 'page_number': page_num + 1,
                 'text': text
@@ -349,6 +385,10 @@ def summarize_text():
     original_mode = data.get('original_mode', 'summarize')
     session_id = request.args.get('sessionId', str(uuid.uuid4()))
 
+    print(f"DEBUG: Summarize request received. Session ID: {session_id}, Filename: {original_filename}")
+    print(f"DEBUG: Full text length for summarization: {len(full_text) if full_text else 0}")
+    # print(f"DEBUG: Full text content (first 500 chars): {full_text[:500] if full_text else 'N/A'}") # Uncomment for full text debug if needed
+
     if not full_text:
         return jsonify({'error': 'No text provided for summarization.'}), 400
 
@@ -380,10 +420,14 @@ Summary:
 
     llm_response = call_llm_api(prompt_messages)
 
+    print(f"DEBUG: Raw LLM response for summarize: {json.dumps(llm_response, indent=2)}") # Added debug print
+
     if "error" in llm_response:
         return jsonify(llm_response), 500
     
     summary = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "Could not generate summary.")
+    
+    print(f"DEBUG: Final summary content: {summary}") # Added debug print
     
     return jsonify({
         'status': 'success',
@@ -552,19 +596,12 @@ def chat_with_document():
 
         # Define the specific primary OpenRouter models for chat, in order of preference
         chat_primary_models = [
-            "qwen/qwen-2.5-72b-instruct:free",          # First choice (OpenRouter)
+            "qwen/qwen-2.5-72b-instruct:free",          # First choice for chat
             "moonshotai/kimi-dev-72b:free",             # New addition, second choice
             "mistralai/devstral-small-2505:free",       # New addition, third choice
             "meta-llama/llama-3.2-3b-instruct:free",    # Existing Llama
-            # AIMLAPI.com Gemma 3 models (free tier)
-            "google/gemma-3-1b-it",                     # AIMLAPI.com
-            "google/gemma-3-4b-it",                     # AIMLAPI.com
-            "google/gemma-3-12b-it",                    # AIMLAPI.com
-            "google/gemma-3-27b-it",                    # AIMLAPI.com
-            "google/gemma-3n-e4b-it",                   # AIMLAPI.com
-            # Google AI Studio (Gemini) models
-            "gemini-1.5-flash-latest",                  # Google AI Studio: Fast and cost-effective
-            "gemini-1.5-pro-latest",                    # Google AI Studio: More capable, higher cost
+            # You can keep Gemma as a fifth fallback if you wish, but expect rate limits
+            # "google/gemma-2-9b-it:free"
         ]
 
         # REVISED PROMPT FOR CHAT - More direct for LLM, removed separate system message
