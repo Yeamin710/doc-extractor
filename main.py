@@ -120,6 +120,7 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
         request_payload = {}
         headers = {}
         api_type = None 
+        response_content = None # Initialize to None
 
         if model_choice.startswith("gemini-") or model_choice.startswith("models/gemini-"): # Specific check for Google Gemini models
             if not GOOGLE_AI_STUDIO_API_KEY:
@@ -204,21 +205,33 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
             # Parse response based on API type
             response_json = response.json()
             print(f"DEBUG: Raw LLM response from {api_type} for model {model_choice}: {json.dumps(response_json, indent=2)}") # Added debug print
+            
             if api_type == "openrouter" or api_type == "aimlapi":
-                # Both OpenRouter and AIMLAPI.com are assumed to return OpenAI-like structure
-                return response_json
+                response_content = response_json.get("choices", [{}])[0].get("message", {}).get("content")
             elif api_type == "google_ai_studio":
-                # Google AI Studio (Gemini) response parsing
                 if response_json and response_json.get("candidates") and len(response_json["candidates"]) > 0:
                     first_candidate = response_json["candidates"][0]
                     if first_candidate.get("content") and first_candidate["content"].get("parts") and len(first_candidate["content"]["parts"]) > 0:
-                        return {
-                            "choices": [{"message": {"content": first_candidate["content"]["parts"][0].get("text", "")}}]
-                        }
-                raise ValueError(f"Unexpected Google AI Studio response format: {response_json}")
+                        response_content = first_candidate["content"]["parts"][0].get("text", "")
+            
+            # CRITICAL CHECK: If response_content is empty or None, treat as failure to trigger fallback
+            if not response_content or not response_content.strip():
+                print(f"Warning: LLM response from {model_choice} ({api_type}) was empty or contained no usable content. Trying next model...")
+                raise ValueError("LLM returned empty or no usable content.") # Raise error to trigger fallback
+            
+            # If content is found, return the parsed response
+            if api_type == "openrouter" or api_type == "aimlapi":
+                return response_json # Return the full OpenAI-like structure
+            elif api_type == "google_ai_studio":
+                # For Google AI Studio, reconstruct a compatible response structure
+                return {
+                    "choices": [{"message": {"content": response_content}}]
+                }
 
         except requests.exceptions.RequestException as e:
             print(f"Warning: LLM API call failed with model {model_choice} ({api_type}): {str(e)}. Trying next model...")
+        except ValueError as e: # Catch the custom ValueError for empty content
+            print(f"Warning: {e} with model {model_choice} ({api_type}). Trying next model...")
         except Exception as e:
             print(f"Warning: An unexpected error occurred with model {model_choice}: {str(e)}. Trying next model...")
     
