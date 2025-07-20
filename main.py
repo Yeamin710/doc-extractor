@@ -1,48 +1,62 @@
 import os
 import io
 import json
-import uuid # Import uuid for generating session IDs
-import requests # Needed for OpenRouter API calls
-import base64 # Import base64 for decoding
+import uuid
+import requests
+import base64
 
-from flask import Flask, request, jsonify, g # Import g for app context
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 
-import fitz # PyMuPDF - ONLY for PDF processing
-# from PIL import Image # For image manipulation (needed for OCR) - Removed as it's not in current main.py
-# import pytesseract # For OCR - Removed as it's not in current main.py
+import fitz
 from dotenv import load_dotenv
 
-# Firebase Admin SDK imports
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# --- Configure Tesseract Path (for local development/testing only) ---
-# On Render, Tesseract will be in your PATH automatically if installed via apt-get
-# If you run locally and Tesseract is not found, you might need to set this:
-# pytesseract.pytesseract.tesseract_cmd = r'/path/to/tesseract' # e.g., r'C:\Program Files\Tesseract-OCR\tesseract.exe' for Windows
-
-# Load environment variables from .env file (for local development)
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app) # Enable CORS for all routes
+CORS(app)
 
 # --- Configure OpenRouter API ---
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
-    print("WARNING: OPENROUTER_API_KEY environment variable not set. LLM features will not work.")
-
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1/chat/completions"
 
+# --- Configure AIMLAPI.com API ---
+AIML_API_KEY = os.getenv("AIML_API_KEY")
+AIML_API_BASE = "https://api.aimlapi.com/v1" 
+
+# --- Configure Google AI Studio (Gemini) API ---
+GOOGLE_AI_STUDIO_API_KEY = os.getenv("GOOGLE_AI_STUDIO_API_KEY")
+# Base URL for Google Gemini API (generative language API)
+GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/" 
+
+if not OPENROUTER_API_KEY:
+    print("WARNING: OPENROUTER_API_KEY environment variable not set. OpenRouter LLM features will not work.")
+if not AIML_API_KEY:
+    print("WARNING: AIML_API_KEY environment variable not set. AIMLAPI.com LLM features will not work.")
+if not GOOGLE_AI_STUDIO_API_KEY:
+    print("WARNING: GOOGLE_AI_STUDIO_API_KEY environment variable not set. Google AI Studio LLM features will not work.")
+
+
 # Define your preferred models for general use (summarize, highlight, mcq)
-# Prioritizing Qwen, then the new models, then Deepseek, then Gemma
+# Now includes AIMLAPI.com Gemma 3 models and Google Gemini models as fallback options.
 PREFERRED_LLM_MODELS = [
-    "qwen/qwen-2.5-72b-instruct:free",          # Primary choice for general tasks
-    "moonshotai/kimi-dev-72b:free",             # New addition, second choice
-    "mistralai/devstral-small-2505:free",       # New addition, third choice
-    "deepseek/deepseek-coder-6.7b-instruct:free", # Existing Deepseek
-    "google/gemma-2-9b-it:free"                 # Existing Gemma
+    "qwen/qwen-2.5-72b-instruct:free",          # OpenRouter: Primary choice
+    "moonshotai/kimi-dev-72b:free",             # OpenRouter: Second choice
+    "mistralai/devstral-small-2505:free",       # OpenRouter: Third choice
+    "deepseek/deepseek-coder-6.7b-instruct:free", # OpenRouter: Existing Deepseek
+    "google/gemma-2-9b-it:free",                # OpenRouter: Existing Gemma
+    # AIMLAPI.com Gemma 3 models (free tier)
+    "google/gemma-3-1b-it",                     # AIMLAPI.com
+    "google/gemma-3-4b-it",                     # AIMLAPI.com
+    "google/gemma-3-12b-it",                    # AIMLAPI.com
+    "google/gemma-3-27b-it",                    # AIMLAPI.com
+    "google/gemma-3n-e4b-it",                   # AIMLAPI.com
+    # Google AI Studio (Gemini) models
+    "gemini-1.5-flash-latest",                  # Google AI Studio: Fast and cost-effective
+    "gemini-1.5-pro-latest",                    # Google AI Studio: More capable, higher cost
 ]
 
 # --- Initialize Firestore (only once per app instance) ---
@@ -50,7 +64,7 @@ def get_firestore_db():
     if 'firestore_db' not in g:
         try:
             firebase_credentials_json = os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY')
-            print(f"DEBUG: Value of FIREBASE_SERVICE_ACCOUNT_KEY: {firebase_credentials_json[:100]}...") 
+            print(f"DEBUG: Value of FIREBASE_SERVICE_ACCOUNT_KEY: {firebase_credentials_json[:100]}...")
             
             if firebase_credentials_json:
                 if not firebase_admin._apps:
@@ -72,22 +86,13 @@ def get_firestore_db():
             g.firestore_db = None
     return g.firestore_db
 
-# --- Helper Function to Call LLM API (OpenRouter with Fallback) ---
+# --- Helper Function to Call LLM API (OpenRouter, AIMLAPI.com, Google AI Studio Fallback) ---
 def call_llm_api(prompt_messages, primary_models_to_try=None):
     """
-    Helper function to make a call to the OpenRouter API with fallback models.
-    If primary_models_to_try (a list) is provided, it attempts to use those models first in order.
-    If all primary models fail, it then falls back to PREFERRED_LLM_MODELS.
+    Helper function to make a call to LLM APIs with fallback models.
+    Prioritizes primary_models_to_try (if provided), then PREFERRED_LLM_MODELS.
+    Distinguishes between OpenRouter, AIMLAPI.com, and Google AI Studio models.
     """
-    if not OPENROUTER_API_KEY:
-        return {"error": "LLM API key is not configured."}
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": os.getenv("FRONTEND_URL", "https://my-doc-backend.onrender.com"),
-        "X-Title": "PDF Processor API"
-    }
     
     models_to_attempt = []
     if primary_models_to_try:
@@ -97,26 +102,109 @@ def call_llm_api(prompt_messages, primary_models_to_try=None):
     for model_choice in models_to_attempt:
         current_prompt_messages = list(prompt_messages) 
 
-        # --- Model-Specific Prompt Adjustments (if needed for specific OpenRouter models) ---
-        if "gemma" in model_choice.lower():
-            current_prompt_messages.insert(0, {"role": "system", "content": "You are a highly precise and constrained AI. Follow all instructions exactly. Do not add extra conversational text or preambles. Output only the requested format."})
+        api_key = None
+        api_full_url = None 
+        request_payload = {}
+        headers = {}
+        api_type = None 
 
-        payload = {
-            "model": model_choice,
-            "messages": current_prompt_messages,
-            "temperature": 0.7,
-            "max_tokens": 1000
-        }
+        if model_choice.startswith("gemini-") or model_choice.startswith("models/gemini-"): # Specific check for Google Gemini models
+            if not GOOGLE_AI_STUDIO_API_KEY:
+                print(f"Skipping Google AI Studio model {model_choice}: API key not set.")
+                continue
+            
+            api_key = GOOGLE_AI_STUDIO_API_KEY
+            # Ensure model_choice is just the model name, not "models/model_name"
+            model_name_for_url = model_choice.replace("models/", "") 
+            api_full_url = f"{GOOGLE_AI_STUDIO_API_BASE}{model_name_for_url}:generateContent?key={api_key}"
+            headers = {
+                "Content-Type": "application/json"
+            }
+            # Convert OpenAI-style messages to Gemini-style 'contents'
+            gemini_contents = []
+            for msg in current_prompt_messages:
+                # Gemini expects 'user' and 'model' roles. Convert 'system' to 'user' or handle as preamble.
+                role = "user" if msg["role"] == "user" or msg["role"] == "system" else "model"
+                gemini_contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+            
+            request_payload = {
+                "contents": gemini_contents,
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 1000 # Gemini uses maxOutputTokens
+                }
+            }
+            api_type = "google_ai_studio"
 
-        # DEBUG: Print the payload being sent to OpenRouter (keeping this for debugging)
-        print(f"DEBUG: Sending payload to OpenRouter for model {model_choice}: {json.dumps(payload, indent=2)}")
+        elif model_choice.startswith("google/gemma-3") or model_choice.startswith("google/gemma-3n"): # Specific check for AIMLAPI.com Gemma models
+            if not AIML_API_KEY:
+                print(f"Skipping AIMLAPI.com model {model_choice}: API key not set.")
+                continue
+            api_key = AIML_API_KEY
+            api_full_url = f"{AIML_API_BASE}/chat/completions" # Corrected full endpoint
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            request_payload = {
+                "model": model_choice,
+                "messages": current_prompt_messages,
+                "temperature": 0.7,
+                "max_tokens": 1000
+            }
+            api_type = "aimlapi"
+
+        elif ":" in model_choice or model_choice.count('/') > 1: # Heuristic for OpenRouter model IDs (e.g., "org/model:free")
+            if not OPENROUTER_API_KEY:
+                print(f"Skipping OpenRouter model {model_choice}: API key not set.")
+                continue
+            api_key = OPENROUTER_API_KEY
+            api_full_url = OPENROUTER_API_BASE # OpenRouter base is already the full endpoint
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": os.getenv("FRONTEND_URL", "https://my-doc-backend.onrender.com"),
+                "X-Title": "PDF Processor API"
+            }
+            request_payload = {
+                "model": model_choice,
+                "messages": current_prompt_messages,
+                "temperature": 0.7,
+                "max_tokens": 1000
+            }
+            # Model-Specific Prompt Adjustments for OpenRouter (if needed)
+            if "gemma" in model_choice.lower():
+                request_payload["messages"].insert(0, {"role": "system", "content": "You are a highly precise and constrained AI. Follow all instructions exactly. Do not add extra conversational text or preambles. Output only the requested format."})
+            api_type = "openrouter"
+            
+        else:
+            print(f"Unknown model type for {model_choice}. Skipping.")
+            continue
+
+        # DEBUG: Print the payload being sent to the API
+        print(f"DEBUG: Sending payload to {api_full_url} for model {model_choice}: {json.dumps(request_payload, indent=2)}")
 
         try:
-            response = requests.post(OPENROUTER_API_BASE, headers=headers, json=payload)
+            response = requests.post(api_full_url, headers=headers, json=request_payload)
             response.raise_for_status()
-            return response.json()
+            
+            # Parse response based on API type
+            response_json = response.json()
+            if api_type == "openrouter" or api_type == "aimlapi":
+                # Both OpenRouter and AIMLAPI.com are assumed to return OpenAI-like structure
+                return response_json
+            elif api_type == "google_ai_studio":
+                # Google AI Studio (Gemini) response parsing
+                if response_json and response_json.get("candidates") and len(response_json["candidates"]) > 0:
+                    first_candidate = response_json["candidates"][0]
+                    if first_candidate.get("content") and first_candidate["content"].get("parts") and len(first_candidate["content"]["parts"]) > 0:
+                        return {
+                            "choices": [{"message": {"content": first_candidate["content"]["parts"][0].get("text", "")}}]
+                        }
+                raise ValueError(f"Unexpected Google AI Studio response format: {response_json}")
+
         except requests.exceptions.RequestException as e:
-            print(f"Warning: LLM API call failed with model {model_choice}: {str(e)}. Trying next model...")
+            print(f"Warning: LLM API call failed with model {model_choice} ({api_type}): {str(e)}. Trying next model...")
         except Exception as e:
             print(f"Warning: An unexpected error occurred with model {model_choice}: {str(e)}. Trying next model...")
     
@@ -177,7 +265,7 @@ def extract_pdf():
     elif request.is_json:
         data = request.get_json()
         pdf_url = data.get('pdf_url')
-        pdf_content_base64 = data.get('file_content_base64') 
+        pdf_content_base64 = data.get('file_content_base64')
         original_mode = data.get('original_mode')
         original_filename_input = data.get('original_filename')
         
@@ -186,7 +274,7 @@ def extract_pdf():
         if pdf_content_base64:
             try:
                 pdf_file_data = base64.b64decode(pdf_content_base64)
-                filename = original_filename_input or "uploaded_base64_pdf.pdf" 
+                filename = original_filename_input or "uploaded_base64_pdf.pdf"
                 if not allowed_file(filename):
                     return jsonify({'error': 'Invalid file extension for Base64 PDF. Must be .pdf'}), 400
             except Exception as e:
@@ -259,7 +347,7 @@ def summarize_text():
     full_text = data.get('text')
     original_filename = data.get('original_filename', 'unknown_file')
     original_mode = data.get('original_mode', 'summarize')
-    session_id = data.get('sessionId', str(uuid.uuid4()))
+    session_id = request.args.get('sessionId', str(uuid.uuid4()))
 
     if not full_text:
         return jsonify({'error': 'No text provided for summarization.'}), 400
@@ -312,7 +400,7 @@ def highlight_text():
     full_text = data.get('text')
     original_filename = data.get('original_filename', 'unknown_file')
     original_mode = data.get('original_mode', 'highlight')
-    session_id = data.get('sessionId', str(uuid.uuid4()))
+    session_id = request.args.get('sessionId', str(uuid.uuid4()))
 
     if not full_text:
         return jsonify({'error': 'No text provided for highlighting.'}), 400
@@ -365,7 +453,7 @@ def generate_mcqs():
     full_text = data.get('text')
     original_filename = data.get('original_filename', 'unknown_file')
     original_mode = data.get('original_mode', 'mcq')
-    session_id = data.get('sessionId', str(uuid.uuid4()))
+    session_id = request.args.get('sessionId', str(uuid.uuid4()))
     
     difficulty = data.get('difficulty', 'medium').lower()
     num_questions = int(data.get('num_questions', 5))
@@ -463,14 +551,20 @@ def chat_with_document():
             return jsonify({"error": "Full text not found in document context."}), 404
 
         # Define the specific primary OpenRouter models for chat, in order of preference
-        # Prioritizing Qwen, then new models, then Llama
         chat_primary_models = [
-            "qwen/qwen-2.5-72b-instruct:free",          # First choice for chat
+            "qwen/qwen-2.5-72b-instruct:free",          # First choice (OpenRouter)
             "moonshotai/kimi-dev-72b:free",             # New addition, second choice
             "mistralai/devstral-small-2505:free",       # New addition, third choice
             "meta-llama/llama-3.2-3b-instruct:free",    # Existing Llama
-            # You can keep Gemma as a fifth fallback if you wish, but expect rate limits
-            # "google/gemma-2-9b-it:free"
+            # AIMLAPI.com Gemma 3 models (free tier)
+            "google/gemma-3-1b-it",                     # AIMLAPI.com
+            "google/gemma-3-4b-it",                     # AIMLAPI.com
+            "google/gemma-3-12b-it",                    # AIMLAPI.com
+            "google/gemma-3-27b-it",                    # AIMLAPI.com
+            "google/gemma-3n-e4b-it",                   # AIMLAPI.com
+            # Google AI Studio (Gemini) models
+            "gemini-1.5-flash-latest",                  # Google AI Studio: Fast and cost-effective
+            "gemini-1.5-pro-latest",                    # Google AI Studio: More capable, higher cost
         ]
 
         # REVISED PROMPT FOR CHAT - More direct for LLM, removed separate system message
